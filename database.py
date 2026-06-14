@@ -4,8 +4,9 @@ database.py — SQLite initialisation and all query helpers.
 
 import sqlite_utils
 import json
-from datetime import date
 from pathlib import Path
+
+import timeutil
 
 DB_PATH = Path(__file__).parent / "subscriptions.db"
 
@@ -28,10 +29,13 @@ def init_db() -> sqlite_utils.Database:
     if "subscriptions" not in db.table_names():
         db["subscriptions"].create({
             "id": int, "user_id": int, "name": str, "amount": float,
-            "currency": str, "start_date": str, "end_date": str, "notes": str,
-            "repeat_unit": str, "repeat_skip": int, "is_active": int,
+            "currency": str, "category": str, "start_date": str, "end_date": str,
+            "notes": str, "repeat_unit": str, "repeat_skip": int, "is_active": int,
             "created_at": str, "updated_at": str,
         }, pk="id", foreign_keys=[("user_id", "users", "id")])
+    elif "category" not in db["subscriptions"].columns_dict:
+        # Migration: add category to pre-existing databases.
+        db["subscriptions"].add_column("category", str)
 
     if "subscription_price_history" not in db.table_names():
         db["subscription_price_history"].create({
@@ -87,14 +91,15 @@ def get_subscription(db, sub_id: int, user_id: int):
 
 
 def get_active_subscriptions(db, user_id: int) -> list:
-    today = date.today().isoformat()
+    today = timeutil.today_iso()
     return _rows_as_dicts(db,
         "SELECT * FROM subscriptions WHERE user_id = ? AND is_active = 1 "
         "AND (end_date IS NULL OR end_date >= ?)",
         [user_id, today])
 
 
-def get_all_subscriptions(db, user_id: int, filter_active: str = None, search: str = None) -> list:
+def get_all_subscriptions(db, user_id: int, filter_active: str = None,
+                          search: str = None, category: str = None) -> list:
     query = "SELECT * FROM subscriptions WHERE user_id = ?"
     params = [user_id]
     if filter_active == "active":
@@ -104,15 +109,28 @@ def get_all_subscriptions(db, user_id: int, filter_active: str = None, search: s
     if search:
         query += " AND name LIKE ?"
         params.append(f"%{search}%")
+    if category:
+        query += " AND COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized') = ?"
+        params.append(category)
     query += " ORDER BY name ASC"
     return _rows_as_dicts(db, query, params)
+
+
+def get_categories(db, user_id: int) -> list:
+    """Distinct non-empty category names for a user, alphabetically sorted."""
+    rows = _rows_as_dicts(db,
+        "SELECT DISTINCT TRIM(category) AS c FROM subscriptions "
+        "WHERE user_id = ? AND category IS NOT NULL AND TRIM(category) != '' "
+        "ORDER BY c COLLATE NOCASE ASC",
+        [user_id])
+    return [r["c"] for r in rows]
 
 
 # ── Price history queries ──────────────────────────────────────────────────────
 
 def get_active_price(db, subscription_id: int, amount_fallback: float,
                      reference_date: str = None) -> float:
-    ref = reference_date or date.today().isoformat()
+    ref = reference_date or timeutil.today_iso()
     row = db.execute(
         "SELECT amount FROM subscription_price_history "
         "WHERE subscription_id = ? AND valid_from <= ? "

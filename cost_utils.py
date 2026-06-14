@@ -99,21 +99,20 @@ def upcoming_payments(subs: list, price_fn, days: int = 30, reference: date = No
     return results
 
 
-# ── Year-aware cost (respects price history mid-year changes) ─────────────────
+# ── Range-aware cost (respects price history mid-period changes) ──────────────
 
-def year_cost_with_price_history(sub: dict, price_history: list, year: int) -> float:
+def range_cost_with_price_history(sub: dict, price_history: list,
+                                  range_start: date, range_end: date) -> float:
     """
-    True cost of a subscription in a calendar year, honouring all price changes.
+    True cost of a subscription over an inclusive [range_start, range_end] window,
+    honouring all price changes and clamping to the subscription's active dates.
     price_history: list of dicts with 'amount' (float) and 'valid_from' (str YYYY-MM-DD).
     """
-    year_start = date(year, 1, 1)
-    year_end   = date(year, 12, 31)
+    sub_start = date.fromisoformat(sub["start_date"]) if sub.get("start_date") else range_start
+    sub_end   = date.fromisoformat(sub["end_date"])   if sub.get("end_date")   else range_end
 
-    sub_start = date.fromisoformat(sub["start_date"]) if sub.get("start_date") else year_start
-    sub_end   = date.fromisoformat(sub["end_date"])   if sub.get("end_date")   else year_end
-
-    window_start = max(year_start, sub_start)
-    window_end   = min(year_end,   sub_end)
+    window_start = max(range_start, sub_start)
+    window_end   = min(range_end,   sub_end)
 
     if window_start > window_end:
         return 0.0
@@ -144,3 +143,20 @@ def year_cost_with_price_history(sub: dict, price_history: list, year: int) -> f
         total += daily * days_in_seg
 
     return round(total, 2)
+
+
+def year_cost_with_price_history(sub: dict, price_history: list, year: int) -> float:
+    """True cost of a subscription across a calendar year, honouring price changes."""
+    return range_cost_with_price_history(sub, price_history,
+                                         date(year, 1, 1), date(year, 12, 31))
+
+
+def monthly_costs_for_year(sub: dict, price_history: list, year: int) -> list:
+    """Return a 12-element list of this subscription's cost per month for `year`."""
+    import calendar
+    out = []
+    for month in range(1, 13):
+        last_day = calendar.monthrange(year, month)[1]
+        out.append(range_cost_with_price_history(
+            sub, price_history, date(year, month, 1), date(year, month, last_day)))
+    return out

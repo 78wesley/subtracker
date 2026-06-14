@@ -6,6 +6,7 @@ Shared UI primitives are defined once and reused throughout.
 """
 
 from fasthtml.common import *
+from fasthtml.svg import Svg, Rect, Line, Text
 from starlette.responses import Response as StarletteResponse
 import json
 import csv
@@ -16,14 +17,16 @@ from database import (
     get_db, init_db, get_user_by_id, has_any_users,
     get_active_price, get_active_subscriptions, get_all_subscriptions,
     get_subscription, get_price_history, delete_price_history_entry,
-    get_audit_for_entity, get_audit_log,
+    get_audit_for_entity, get_audit_log, get_categories,
 )
 from auth import authenticate, create_user
 from audit import write_audit_log
 from cost_utils import (
     REPEAT_UNITS, get_period_cost, get_annual_cost, frequency_label,
     next_payment_date, upcoming_payments, year_cost_with_price_history,
+    monthly_costs_for_year,
 )
+from datetime import timedelta
 
 # ══════════════════════════════════════════════════════════════════════════════
 # App bootstrap
@@ -41,18 +44,39 @@ nav { display:flex; align-items:center; gap:1.5rem; padding:0.75rem 1rem;
 nav .brand { font-weight:700; font-size:1.1rem; text-decoration:none; color:var(--pico-color); }
 nav a      { text-decoration:none; color:var(--pico-muted-color); }
 nav a:hover{ color:var(--pico-color); }
+nav a.active{ color:var(--pico-primary); font-weight:600; }
 nav .spacer{ flex:1; }
 nav .debug-pill { background:#fef3c7; border:1px solid #fbbf24; color:#92400e;
                   font-size:0.72rem; padding:0.15rem 0.55rem; border-radius:999px; }
 
 /* Cost cards */
-.cost-cards { display:grid; grid-template-columns:repeat(5,1fr); gap:1rem; margin-bottom:1rem; }
+.cost-cards { display:grid; grid-template-columns:repeat(5,1fr); gap:1rem; margin-bottom:1.25rem; }
 .cost-card  { background:var(--pico-card-background-color); border:1px solid var(--pico-muted-border-color);
               border-radius:var(--pico-border-radius); padding:1rem; text-align:center; }
 .cost-card .label  { font-size:0.72rem; color:var(--pico-muted-color); text-transform:uppercase;
                      letter-spacing:.05em; margin-bottom:.25rem; }
 .cost-card .amount { font-size:1.35rem; font-weight:700; color:var(--pico-primary); }
 .cost-card .sub    { font-size:0.75rem; color:var(--pico-muted-color); margin-top:.2rem; }
+@media (max-width:900px) { .cost-cards { grid-template-columns:repeat(2,1fr); } }
+@media (max-width:480px) { .cost-cards { grid-template-columns:1fr; } }
+
+/* Charts */
+.charts-grid { display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; margin-bottom:1.25rem; }
+@media (max-width:900px) { .charts-grid { grid-template-columns:1fr; } }
+.bar-chart      { width:100%; height:auto; font-size:11px; }
+.bar-chart .bar { fill:var(--pico-primary); transition:fill .15s; }
+.bar-chart .bar:hover { fill:var(--pico-primary-hover, #0a84ff); }
+.bar-chart .axis-label { fill:var(--pico-muted-color); }
+.bar-chart .grid-line  { stroke:var(--pico-muted-border-color); stroke-width:1; }
+.empty-chart { color:var(--pico-muted-color); text-align:center; padding:2rem 0; }
+
+/* Horizontal subscription breakdown */
+.hbar-row   { display:grid; grid-template-columns:9rem 1fr 5.5rem; align-items:center;
+              gap:.6rem; margin-bottom:.45rem; font-size:.85rem; }
+.hbar-name  { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.hbar-track { background:var(--pico-muted-border-color); border-radius:999px; height:.7rem; overflow:hidden; }
+.hbar-fill  { background:var(--pico-primary); height:100%; border-radius:999px; }
+.hbar-val   { text-align:right; color:var(--pico-muted-color); }
 
 /* Year selector */
 .year-bar { display:flex; align-items:center; gap:0.75rem; margin-bottom:0.75rem; flex-wrap:wrap; }
@@ -117,15 +141,20 @@ app, rt = fast_app(
 # UI primitives  (define once, reuse everywhere)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def nav_bar(username: str) -> Nav:
+def nav_bar(username: str, active: str = "") -> Nav:
     debug = timeutil.get_debug_date()
     debug_pill = Span(f"🕐 Debug date: {debug}", cls="debug-pill") if debug else ""
+
+    def link(label, href, key):
+        return A(label, href=href, cls="active" if key == active else None)
+
     return Nav(
         A("💳 SubTracker", href="/dashboard", cls="brand"),
-        A("Dashboard", href="/dashboard"),
-        A("Audit Log", href="/audit"),
-        A("Users", href="/users"),
-        A("Debug", href="/debug"),
+        link("Dashboard", "/dashboard", "dashboard"),
+        link("Manage", "/manage", "manage"),
+        link("Audit Log", "/audit", "audit"),
+        link("Users", "/users", "users"),
+        link("Debug", "/debug", "debug"),
         debug_pill,
         Div(cls="spacer"),
         Span(f"👤 {username}", style="color:var(--pico-muted-color); font-size:.85rem;"),
@@ -184,6 +213,11 @@ def fmt_eur(amount: float) -> str:
     return f"€{amount:,.2f}"
 
 
+def category_label(cat) -> str:
+    """Display name for a category, defaulting empty/None to 'Uncategorized'."""
+    return (cat or "").strip() or "Uncategorized"
+
+
 def truncate(text: str, n: int = 45) -> str:
     t = text or ""
     return t[:n] + "…" if len(t) > n else t
@@ -206,6 +240,66 @@ def json_pretty(raw: str) -> str:
         return json.dumps(json.loads(raw), indent=2) if raw else ""
     except Exception:
         return raw or ""
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Charts  (inline SVG / CSS — no JS dependencies)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def bar_chart(labels: list, values: list, *, height: int = 220,
+              fmt=lambda v: f"€{v:,.0f}") -> object:
+    """Responsive vertical bar chart rendered as inline SVG."""
+    if not values or max(values) <= 0:
+        return Div("No data for this period.", cls="empty-chart")
+
+    n = len(values)
+    W, H = 640, height
+    pad_l, pad_r, pad_t, pad_b = 48, 12, 12, 28
+    plot_w = W - pad_l - pad_r
+    plot_h = H - pad_t - pad_b
+    vmax = max(values)
+    slot = plot_w / n
+    bar_w = slot * 0.62
+
+    elems = []
+    # Horizontal grid lines + y-axis labels (4 steps)
+    for i in range(5):
+        frac = i / 4
+        y = pad_t + plot_h * (1 - frac)
+        elems.append(Line(x1=pad_l, y1=y, x2=W - pad_r, y2=y, cls="grid-line"))
+        elems.append(Text(fmt(vmax * frac), x=pad_l - 6, y=y + 3,
+                           text_anchor="end", cls="axis-label"))
+
+    for i, (lab, val) in enumerate(zip(labels, values)):
+        bh = (val / vmax) * plot_h if vmax else 0
+        x = pad_l + slot * i + (slot - bar_w) / 2
+        y = pad_t + (plot_h - bh)
+        elems.append(Rect(x=x, y=y, width=bar_w, height=bh, rx=2, cls="bar",
+                          title=f"{lab}: {fmt(val)}"))
+        elems.append(Text(lab, x=x + bar_w / 2, y=H - pad_b + 16,
+                          text_anchor="middle", cls="axis-label"))
+
+    return Svg(*elems, viewBox=f"0 0 {W} {H}", cls="bar-chart",
+               preserveAspectRatio="xMidYMid meet", role="img")
+
+
+def hbar_breakdown(items: list, *, fmt=lambda v: f"€{v:,.2f}") -> object:
+    """Horizontal bar breakdown from [(label, value)], sorted desc by value."""
+    items = [(lab, v) for lab, v in items if v > 0]
+    if not items:
+        return Div("No active subscriptions in this year.", cls="empty-chart")
+    items.sort(key=lambda t: t[1], reverse=True)
+    vmax = items[0][1]
+    rows = []
+    for lab, val in items:
+        pct = (val / vmax) * 100 if vmax else 0
+        rows.append(Div(
+            Span(lab, cls="hbar-name", title=lab),
+            Div(Div(cls="hbar-fill", style=f"width:{pct:.1f}%"), cls="hbar-track"),
+            Span(fmt(val), cls="hbar-val"),
+            cls="hbar-row",
+        ))
+    return Div(*rows)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -334,42 +428,52 @@ def get(session):
 # Dashboard
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _build_cost_cards(db, user_id: int, year: int) -> tuple:
+def _year_analytics(db, user_id: int, year: int) -> dict:
     """
-    Returns (cost_cards_element, yearly_total).
-    Calculates true yearly cost using price history for the selected year,
-    then derives period costs from it.
+    Spend analytics for `year`, honouring price history and each subscription's
+    active window. Includes any subscription that was billable during the year
+    (active or since-ended), so historical years are accurate. Returns:
+        period_costs, yearly_total, per_sub [(name, cost)],
+        per_cat [(category, cost)], months [12 floats].
     """
-    active = get_active_subscriptions(db, user_id)
-    yearly_total = 0.0
+    subs = get_all_subscriptions(db, user_id)
+    per_sub, per_cat, months, yearly_total = [], {}, [0.0] * 12, 0.0
 
-    for s in active:
+    for s in subs:
         history = get_price_history(db, s["id"])
-        yearly_total += year_cost_with_price_history(s, history, year)
+        sub_year = year_cost_with_price_history(s, history, year)
+        if sub_year <= 0:
+            continue
+        per_sub.append((s["name"], sub_year))
+        cat = category_label(s.get("category"))
+        per_cat[cat] = round(per_cat.get(cat, 0.0) + sub_year, 2)
+        yearly_total += sub_year
+        for i, m in enumerate(monthly_costs_for_year(s, history, year)):
+            months[i] += m
 
-    # From yearly we can derive all other periods
+    yearly_total = round(yearly_total, 2)
     period_costs = {
         "daily":     round(yearly_total / 365.25, 2),
         "weekly":    round(yearly_total / 52.18,  2),
         "monthly":   round(yearly_total / 12,     2),
         "quarterly": round(yearly_total / 4,      2),
-        "yearly":    round(yearly_total,           2),
+        "yearly":    yearly_total,
+    }
+    return {
+        "period_costs": period_costs,
+        "yearly_total": yearly_total,
+        "per_sub":      per_sub,
+        "per_cat":      list(per_cat.items()),
+        "months":       [round(m, 2) for m in months],
     }
 
-    cards = Div(
-        *[Div(
-            Div(p.capitalize(), cls="label"),
-            Div(fmt_eur(period_costs[p]), cls="amount"),
-            Div(f"{year} total ÷ {p}", cls="sub"),
-            cls="cost-card",
-        ) for p in ["daily", "weekly", "monthly", "quarterly", "yearly"]],
-        cls="cost-cards",
-    )
-    return cards, yearly_total
+
+MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
 @rt("/dashboard")
-def get(session, q: str = "", status: str = "all", year: int = None):
+def get(session, year: int = None):
     redir = guard(session)
     if redir: return redir
     user = current_user(session)
@@ -379,7 +483,17 @@ def get(session, q: str = "", status: str = "all", year: int = None):
     year = year or current_year
     year_range = list(range(current_year - 3, current_year + 3))
 
-    cost_cards, yearly_total = _build_cost_cards(db, user["id"], year)
+    data = _year_analytics(db, user["id"], year)
+
+    cost_cards = Div(
+        *[Div(
+            Div(p.capitalize(), cls="label"),
+            Div(fmt_eur(data["period_costs"][p]), cls="amount"),
+            Div(f"{year} total ÷ {p}", cls="sub"),
+            cls="cost-card",
+        ) for p in ["daily", "weekly", "monthly", "quarterly", "yearly"]],
+        cls="cost-cards",
+    )
 
     year_bar = Form(
         Div(
@@ -389,25 +503,62 @@ def get(session, q: str = "", status: str = "all", year: int = None):
                 onchange="this.form.submit()",
                 style="width:100px",
             )),
-            Span(f"Total {year}: ", Strong(fmt_eur(yearly_total)),
+            Span(f"Total {year}: ", Strong(fmt_eur(data["yearly_total"])),
                  style="align-self:center; color:var(--pico-muted-color); font-size:.9rem;"),
-            # Preserve other filters
-            Input(type="hidden", name="q", value=q),
-            Input(type="hidden", name="status", value=status),
             cls="year-bar",
         ),
         method="get", action="/dashboard",
     )
 
-    # Subscription table
+    monthly_chart = section_card(
+        heading=f"Monthly spend in {year}",
+        *[bar_chart(MONTH_LABELS, data["months"])],
+    )
+    breakdown_charts = Div(
+        section_card(
+            heading=f"Spend by subscription ({year})",
+            *[hbar_breakdown(data["per_sub"])],
+        ),
+        section_card(
+            heading=f"Spend by category ({year})",
+            *[hbar_breakdown(data["per_cat"])],
+        ),
+        cls="charts-grid",
+    )
+
+    return page_title("Dashboard"), nav_bar(user["username"], "dashboard"), Main(
+        Div(H2("Dashboard"),
+            A("Manage subscriptions →", href="/manage"),
+            cls="page-header"),
+        year_bar,
+        cost_cards,
+        monthly_chart,
+        breakdown_charts,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Manage — subscription list, search/filter, add, export
+# ══════════════════════════════════════════════════════════════════════════════
+
+@rt("/manage")
+def get(session, q: str = "", status: str = "all", category: str = ""):
+    redir = guard(session)
+    if redir: return redir
+    user = current_user(session)
+    db = get_db()
+
+    all_categories = get_categories(db, user["id"])
     subs = get_all_subscriptions(db, user["id"],
                                  filter_active=status if status != "all" else None,
-                                 search=q or None)
+                                 search=q or None,
+                                 category=category or None)
     rows = []
     for s in subs:
         price = get_active_price(db, s["id"], s["amount"])
         rows.append(Tr(
             Td(A(s["name"], href=f"/subscriptions/{s['id']}/detail")),
+            Td(badge(category_label(s.get("category")), "info")),
             Td(fmt_eur(price)),
             Td(frequency_label(s["repeat_unit"], s["repeat_skip"] or 1)),
             Td(s["start_date"] or "—"),
@@ -426,8 +577,8 @@ def get(session, q: str = "", status: str = "all", year: int = None):
 
     table = (
         Table(
-            Thead(Tr(Th("Name"), Th("Amount"), Th("Frequency"), Th("Start"),
-                     Th("End"), Th("Status"), Th("Notes"), Th("Actions"))),
+            Thead(Tr(Th("Name"), Th("Category"), Th("Amount"), Th("Frequency"),
+                     Th("Start"), Th("End"), Th("Status"), Th("Notes"), Th("Actions"))),
             Tbody(*rows),
         ) if rows else P("No subscriptions found. ", A("Add one →", href="/subscriptions/new"))
     )
@@ -442,7 +593,11 @@ def get(session, q: str = "", status: str = "all", year: int = None):
                 Option("Inactive", value="inactive", selected=(status == "inactive")),
                 name="status", style="width:130px",
             )),
-            Input(type="hidden", name="year", value=str(year)),
+            Label("Category", Select(
+                Option("All", value="", selected=(not category)),
+                *[Option(c, value=c, selected=(category == c)) for c in all_categories],
+                name="category", style="width:160px",
+            )),
             Button("Filter", type="submit",
                    style="margin-bottom:0; padding:.4rem 1rem"),
             A(Button("＋ Add", style="margin-bottom:0; padding:.4rem 1rem"),
@@ -452,13 +607,11 @@ def get(session, q: str = "", status: str = "all", year: int = None):
               href="/subscriptions/export"),
             cls="filters",
         ),
-        method="get", action="/dashboard",
+        method="get", action="/manage",
     )
 
-    return page_title("Dashboard"), nav_bar(user["username"]), Main(
-        Div(H2("Dashboard"), cls="page-header"),
-        year_bar,
-        cost_cards,
+    return page_title("Manage"), nav_bar(user["username"], "manage"), Main(
+        Div(H2("Manage Subscriptions"), cls="page-header"),
         filter_bar,
         table,
     )
@@ -468,9 +621,11 @@ def get(session, q: str = "", status: str = "all", year: int = None):
 # Subscription form (shared between new & edit)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save") -> Form:
+def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save",
+                      categories: list = None) -> Form:
     s = sub or {}
     today_val = timeutil.today_iso()
+    categories = categories or []
     return Form(
         Grid(
             Label("Name *", Input(name="name", value=s.get("name", ""),
@@ -495,6 +650,11 @@ def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save"
                   Input(name="repeat_skip", type="number", min="1",
                         value=s.get("repeat_skip", 1), required=True)),
         ),
+        Label("Category",
+              Input(name="category", value=s.get("category") or "",
+                    placeholder="e.g. Entertainment", autocomplete="off",
+                    **{"list": "category-options"})),
+        Datalist(*[Option(value=c) for c in categories], id="category-options"),
         Label("Notes", Textarea(s.get("notes") or "", name="notes", rows=3,
               placeholder="Optional notes…")),
         Label(
@@ -516,16 +676,19 @@ def get(session):
     redir = guard(session)
     if redir: return redir
     user = current_user(session)
-    return page_title("New Subscription"), nav_bar(user["username"]), Main(
-        Div(H2("Add Subscription"), A("← Dashboard", href="/dashboard"), cls="page-header"),
-        subscription_form("/subscriptions/new", btn_label="Create Subscription"),
+    db = get_db()
+    return page_title("New Subscription"), nav_bar(user["username"], "manage"), Main(
+        Div(H2("Add Subscription"), A("← Manage", href="/manage"), cls="page-header"),
+        subscription_form("/subscriptions/new", btn_label="Create Subscription",
+                          categories=get_categories(db, user["id"])),
     )
 
 
 @rt("/subscriptions/new")
 async def post(session, name: str, amount: float, start_date: str,
                end_date: str = "", repeat_unit: str = "monthly",
-               repeat_skip: int = 1, notes: str = "", is_active: str = ""):
+               repeat_skip: int = 1, notes: str = "", is_active: str = "",
+               category: str = ""):
     redir = guard(session)
     if redir: return redir
     user = current_user(session)
@@ -533,10 +696,12 @@ async def post(session, name: str, amount: float, start_date: str,
     now = timeutil.now_iso()
     skip = max(1, repeat_skip)
     is_active_val = 1 if is_active == "1" else 0
+    category_val = category.strip() or None
 
     sub_id = db["subscriptions"].insert({
         "user_id": user["id"], "name": name, "amount": amount, "currency": "EUR",
-        "start_date": start_date, "end_date": end_date or None, "notes": notes,
+        "category": category_val, "start_date": start_date,
+        "end_date": end_date or None, "notes": notes,
         "repeat_unit": repeat_unit, "repeat_skip": skip, "is_active": is_active_val,
         "created_at": now, "updated_at": now,
     }).last_pk
@@ -548,10 +713,10 @@ async def post(session, name: str, amount: float, start_date: str,
 
     write_audit_log(user["id"], "CREATE", "subscription", sub_id,
                     f"Created '{name}' €{amount}/{repeat_unit}",
-                    new_values={"name": name, "amount": amount,
+                    new_values={"name": name, "amount": amount, "category": category_val,
                                 "repeat_unit": repeat_unit, "repeat_skip": skip,
                                 "start_date": start_date})
-    return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/manage", status_code=303)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -566,35 +731,39 @@ def get(session, sub_id: int):
     db = get_db()
     sub = get_subscription(db, sub_id, user["id"])
     if not sub:
-        return RedirectResponse("/dashboard", status_code=303)
-    return page_title(f"Edit {sub['name']}"), nav_bar(user["username"]), Main(
+        return RedirectResponse("/manage", status_code=303)
+    return page_title(f"Edit {sub['name']}"), nav_bar(user["username"], "manage"), Main(
         Div(H2(f"Edit: {sub['name']}"),
             A("← Back", href=f"/subscriptions/{sub_id}/detail"),
             cls="page-header"),
         alert("Editing amount here updates the base record only. "
               "Use 💰 Price Change to record a dated price change.", "warning"),
         subscription_form(f"/subscriptions/{sub_id}/edit", sub=sub,
-                          btn_label="Update Subscription"),
+                          btn_label="Update Subscription",
+                          categories=get_categories(db, user["id"])),
     )
 
 
 @rt("/subscriptions/{sub_id}/edit")
 async def post(session, sub_id: int, name: str, amount: float, start_date: str,
                end_date: str = "", repeat_unit: str = "monthly",
-               repeat_skip: int = 1, notes: str = "", is_active: str = ""):
+               repeat_skip: int = 1, notes: str = "", is_active: str = "",
+               category: str = ""):
     redir = guard(session)
     if redir: return redir
     user = current_user(session)
     db = get_db()
     sub = get_subscription(db, sub_id, user["id"])
     if not sub:
-        return RedirectResponse("/dashboard", status_code=303)
+        return RedirectResponse("/manage", status_code=303)
 
     skip = max(1, repeat_skip)
     is_active_val = 1 if is_active == "1" else 0
-    old = {k: sub[k] for k in ["name","amount","start_date","end_date",
+    category_val = category.strip() or None
+    old = {k: sub[k] for k in ["name","amount","category","start_date","end_date",
                                  "repeat_unit","repeat_skip","notes","is_active"]}
-    new_vals = {"name": name, "amount": amount, "start_date": start_date,
+    new_vals = {"name": name, "amount": amount, "category": category_val,
+                "start_date": start_date,
                 "end_date": end_date or None, "repeat_unit": repeat_unit,
                 "repeat_skip": skip, "notes": notes, "is_active": is_active_val}
     changed = {k: v for k, v in new_vals.items() if str(v) != str(old.get(k, ""))}
@@ -619,10 +788,10 @@ def get(session, sub_id: int):
     db = get_db()
     sub = get_subscription(db, sub_id, user["id"])
     if not sub:
-        return RedirectResponse("/dashboard", status_code=303)
+        return RedirectResponse("/manage", status_code=303)
 
     current_price = get_active_price(db, sub_id, sub["amount"])
-    return page_title(f"Price Change – {sub['name']}"), nav_bar(user["username"]), Main(
+    return page_title(f"Price Change – {sub['name']}"), nav_bar(user["username"], "manage"), Main(
         Div(H2(f"Price Change: {sub['name']}"),
             A("← Back", href=f"/subscriptions/{sub_id}/detail"),
             cls="page-header"),
@@ -650,7 +819,7 @@ async def post(session, sub_id: int, new_amount: float, valid_from: str, notes: 
     db = get_db()
     sub = get_subscription(db, sub_id, user["id"])
     if not sub:
-        return RedirectResponse("/dashboard", status_code=303)
+        return RedirectResponse("/manage", status_code=303)
 
     old_amount = get_active_price(db, sub_id, sub["amount"])
     now = timeutil.now_iso()
@@ -685,7 +854,7 @@ async def post(session, sub_id: int, entry_id: int):
     db = get_db()
     sub = get_subscription(db, sub_id, user["id"])
     if not sub:
-        return RedirectResponse("/dashboard", status_code=303)
+        return RedirectResponse("/manage", status_code=303)
 
     # Fetch the entry before deleting for audit
     entries = list(db["subscription_price_history"].rows_where(
@@ -719,7 +888,7 @@ def get(session, sub_id: int):
     db = get_db()
     sub = get_subscription(db, sub_id, user["id"])
     if not sub:
-        return RedirectResponse("/dashboard", status_code=303)
+        return RedirectResponse("/manage", status_code=303)
 
     today = timeutil.today()
     active_price = get_active_price(db, sub_id, sub["amount"])
@@ -735,6 +904,7 @@ def get(session, sub_id: int):
             Div(P(Small("Start Date")), P(sub["start_date"] or "—")),
             Div(P(Small("End Date")),   P(sub["end_date"] or "—")),
             Div(P(Small("Status")),     P(status_badge(sub["is_active"]))),
+            Div(P(Small("Category")),   P(badge(category_label(sub.get("category")), "info"))),
             Div(P(Small("Currency")),   P(sub["currency"] or "EUR")),
         ),
         P(Small("Notes"), Br(), sub["notes"] or "—"),
@@ -822,8 +992,8 @@ def get(session, sub_id: int):
         ) if audit_rows else P("No audit entries."),
     )
 
-    return page_title(sub["name"]), nav_bar(user["username"]), Main(
-        Div(H2(sub["name"]), A("← Dashboard", href="/dashboard"), cls="page-header"),
+    return page_title(sub["name"]), nav_bar(user["username"], "manage"), Main(
+        Div(H2(sub["name"]), A("← Manage", href="/manage"), cls="page-header"),
         info, costs, price_hist, next_payments, audit_section,
     )
 
@@ -840,7 +1010,7 @@ async def post(session, sub_id: int):
     db = get_db()
     sub = get_subscription(db, sub_id, user["id"])
     if not sub:
-        return RedirectResponse("/dashboard", status_code=303)
+        return RedirectResponse("/manage", status_code=303)
 
     db["subscriptions"].update(sub_id, {
         "is_active": 0,
@@ -851,7 +1021,7 @@ async def post(session, sub_id: int):
                     f"Soft-deleted '{sub['name']}'",
                     old_values={"is_active": sub["is_active"]},
                     new_values={"is_active": 0, "end_date": timeutil.today_iso()})
-    return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/manage", status_code=303)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -868,13 +1038,14 @@ def get(session):
 
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["ID","Name","Active Price (€)","Currency","Frequency",
+    w.writerow(["ID","Name","Category","Active Price (€)","Currency","Frequency",
                 "Start Date","End Date","Active","Notes","Annual Cost (€)"])
     for s in subs:
         price = get_active_price(db, s["id"], s["amount"])
         annual = get_annual_cost(price, s["repeat_unit"], s["repeat_skip"] or 1)
         w.writerow([
-            s["id"], s["name"], f"{price:.2f}", s["currency"] or "EUR",
+            s["id"], s["name"], category_label(s.get("category")),
+            f"{price:.2f}", s["currency"] or "EUR",
             frequency_label(s["repeat_unit"], s["repeat_skip"] or 1),
             s["start_date"] or "", s["end_date"] or "",
             "Yes" if s["is_active"] else "No",
@@ -930,7 +1101,7 @@ def get(session, action_filter: str = "", page: int = 1):
         for e in entries
     ]
 
-    return page_title("Audit Log"), nav_bar(user["username"]), Main(
+    return page_title("Audit Log"), nav_bar(user["username"], "audit"), Main(
         Div(H2("Audit Log"), cls="page-header"),
         filter_bar,
         Table(
@@ -973,7 +1144,7 @@ def get(session, msg: str = "", msg_kind: str = "warning"):
         for u in all_users
     ]
 
-    return page_title("Users"), nav_bar(user["username"]), Main(
+    return page_title("Users"), nav_bar(user["username"], "users"), Main(
         Div(H2("User Management"), cls="page-header"),
         alert(msg, msg_kind) if msg else "",
         Table(
@@ -1034,7 +1205,7 @@ def get(session, msg: str = ""):
     if redir: return redir
     user = current_user(session)
     debug = timeutil.get_debug_date()
-    return page_title("Debug"), nav_bar(user["username"]), Main(
+    return page_title("Debug"), nav_bar(user["username"], "debug"), Main(
         Div(H2("Debug Tools"), cls="page-header"),
         Div(
             H3("Date Override"),
@@ -1080,8 +1251,6 @@ async def post(session):
 # ══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ══════════════════════════════════════════════════════════════════════════════
-
-from datetime import timedelta  # used in detail page upcoming payments
 
 if __name__ == "__main__":
     init_db()
