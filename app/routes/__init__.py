@@ -3,7 +3,8 @@ app.routes — collects every APIRouter so app.main can register them in one pla
 """
 
 from app.routes import (
-    auth_routes, dashboard, manage, subscriptions, audit_routes, users, teams, debug,
+    auth_routes, dashboard, manage, subscriptions, audit_routes, users, teams,
+    admin, debug,
 )
 
 # Order is cosmetic; route paths are unique across modules.
@@ -15,6 +16,7 @@ ALL_ROUTERS = [
     audit_routes.ar,
     users.ar,
     teams.ar,
+    admin.ar,
     debug.ar,
 ]
 

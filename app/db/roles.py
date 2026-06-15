@@ -29,6 +29,13 @@ def role_matrix(db) -> dict:
 
 
 def set_role_permission(db, role_name: str, permission_name: str, granted: bool) -> None:
+    # Validate against the known catalogs so this helper can never write a junk
+    # (role, permission) row even if a future caller passes unsanitised input.
+    from app.rbac import ALL_PERMISSIONS, GLOBAL_ROLE_NAMES, TEAM_ROLE_NAMES
+    if role_name not in (GLOBAL_ROLE_NAMES + TEAM_ROLE_NAMES):
+        return
+    if permission_name not in ALL_PERMISSIONS:
+        return
     if granted:
         db["role_permissions"].upsert(
             {"role_name": role_name, "permission_name": permission_name},

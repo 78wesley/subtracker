@@ -99,3 +99,16 @@ def delete_price_history_entry(db, entry_id: int, subscription_id: int) -> bool:
         return False
     db["subscription_price_history"].delete(entry_id)
     return True
+
+
+# ── Restore / permanent delete (admin lifecycle) ─────────────────────────────
+
+def restore_subscription(db, sub_id: int) -> None:
+    db["subscriptions"].update(sub_id, {
+        "deleted_at": None, "deleted_by": None, "updated_at": timeutil.now_iso()})
+
+
+def purge_subscription(db, sub_id: int) -> None:
+    """Hard-delete a subscription and its price history. Audit BEFORE calling this."""
+    db["subscription_price_history"].delete_where("subscription_id = ?", [sub_id])
+    db["subscriptions"].delete(sub_id)
