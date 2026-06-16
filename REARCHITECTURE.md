@@ -173,6 +173,8 @@ A plain **User** (baseline, no team role) has no permissions until added to a te
 
 ## 6. UI / UX improvements
 
+- **Theme:** PicoCSS removed (`fast_app(pico=False)`); the UI uses the **shadcn/ui (Tailwind) design system** — shadcn's HSL design tokens (light + `.dark`) plus component styling for the native elements FastHTML emits, defined centrally in `app/styles.py`. Tailwind is loaded via CDN with those tokens (preflight off). Legacy `--pico-*` variables are aliased to shadcn tokens so existing inline styles keep working.
+
 - **Table text wrapping:** `td { white-space:normal; overflow-wrap:anywhere; word-break:break-word; vertical-align:top; max-width:22rem }`, `th { white-space:nowrap }`, opt-out `.nowrap` for dates/amounts/status. Long cells use a 2-line CSS clamp with the full text in the native `title=` attribute (tooltip, no JS) — the `truncate()` helper stops discarding the tail.
 - **Team switcher** in nav (auto-submit `<select>`, mirrors the dashboard year selector), shown when the user has ≥1 team.
 - **Role-gated nav:** `Users`/`Teams`/`Admin`/`Debug` links render only if the active perms allow them.
