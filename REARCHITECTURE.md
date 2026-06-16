@@ -23,8 +23,10 @@ into a maintainable Python package.
 ## 1. Updated database schema
 
 All tables get real soft-delete (`deleted_at` NULL = live, `deleted_by` = actor id snapshot).
-Roles/permissions are **DB-driven rows** so role definitions are editable without code changes
-(spec §8). Permission *strings* are a fixed catalog in code (enforcement references them).
+Roles, permissions, and the role→permission matrix are stored as rows (seeded each boot from the
+code source of truth), but the model is **three fixed roles** — Super Admin, Team Admin, Viewer —
+with non-editable permission sets. Permission *strings* are a fixed catalog in code (enforcement
+references them); operators assign roles, not individual permissions.
 
 ```
 users              id, username, password_hash, global_role,
@@ -127,47 +129,45 @@ New routes arrive in Phase 2–3:
 | GET | `/admin/deleted` | `records.view_deleted` | soft-deleted records |
 | POST | `/admin/deleted/{type}/{id}/restore` | `records.restore` | |
 | POST | `/admin/deleted/{type}/{id}/purge` | `subscriptions.delete.permanent` | hard delete, audited |
-| GET/POST | `/admin/roles` | `settings.manage` | edit role→permission matrix |
+| GET | `/admin/roles` | `settings.manage` | read-only role → permission reference |
 
 Existing handlers gain a `require(ctx, "<perm>")` gate and load rows through the team-scoped helper
 (§7) instead of `WHERE user_id = ?`. `guard(session)` is replaced by a single `Beforeware`.
 
 ---
 
-## 5. Permission matrix
+## 5. Roles & permission matrix
+
+There are **exactly three assignable roles with FIXED permission sets** (not editable — no
+per-permission toggling). Permissions are an internal enforcement detail; operators only ever
+*assign a role*. `user` is the implicit baseline for a normal account (no global powers, no
+permissions of its own) — assigned via the Users page as "User".
+
+- **Super Admin** — global; every permission on every team. Assigned on the Users page.
+- **Team Admin** — per team; full management of their team (subscriptions + members + restore/purge + team audit).
+- **Viewer** — per team; read-only. Both team roles are assigned on each team's Members page.
+
+Effective permissions for a `(user, active_team)` pair = the user's global-role perms **unioned**
+with the active team's team-role perms (only if a live membership exists). `super_admin` short-circuits
+to all permissions. No deny rules (union only → simple, auditable). The `/admin/roles` page is a
+**read-only reference** of this matrix.
 
 **Permission catalog:** `subscriptions.view|create|edit|delete|delete.permanent`,
 `records.restore|view_deleted`, `teams.view|manage`, `users.view|manage`, `audit.view`, `settings.manage`.
 
-Effective permissions for a `(user, active_team)` pair = **union** of the user's global-role perms and,
-*only if a live membership exists for that team*, the team-role perms. `super_admin` = all permissions on
-all teams (override). `admin` additionally gets team-management perms on every team without a membership row.
-There are no deny rules (union only → simple, auditable).
-
-**Global roles**
-
-| Permission | super_admin | admin | user |
-|---|:--:|:--:|:--:|
-| subscriptions.* (view/create/edit/delete) | ● all teams | view all | — (via team role) |
-| subscriptions.delete.permanent | ● | — | — |
-| records.restore / view_deleted | ● | ● | — |
-| teams.view | ● | ● | own |
-| teams.manage | ● | ● | — |
-| users.view | ● | ● | — |
-| users.manage (assign global roles) | ● | — | — |
-| audit.view | ● all | ● all | own actions |
-| settings.manage | ● | — | — |
-
-**Team roles** (apply only within a team where the user holds the membership)
-
-| Permission | team_admin | manager | viewer |
+| Permission | Super Admin (global) | Team Admin (team) | Viewer (team) |
 |---|:--:|:--:|:--:|
 | subscriptions.view | ● | ● | ● |
 | subscriptions.create / edit / delete | ● | ● | — |
-| subscriptions.delete.permanent | ● | — | — |
-| records.restore / view_deleted | ● | — | — |
-| teams.manage (this team) | ● | — | — |
-| audit.view (this team) | ● | — | — |
+| subscriptions.delete.permanent | ● | ● | — |
+| records.restore / view_deleted | ● | ● | — |
+| teams.view | ● | ● | ● |
+| teams.manage (this team) | ● | ● | — |
+| audit.view | ● (all) | ● (this team) | own actions |
+| users.view / users.manage | ● | — | — |
+| settings.manage | ● | — | — |
+
+A plain **User** (baseline, no team role) has no permissions until added to a team as Viewer or Team Admin.
 
 ---
 
@@ -177,7 +177,7 @@ There are no deny rules (union only → simple, auditable).
 - **Team switcher** in nav (auto-submit `<select>`, mirrors the dashboard year selector), shown when the user has ≥1 team.
 - **Role-gated nav:** `Users`/`Teams`/`Admin`/`Debug` links render only if the active perms allow them.
 - **Deleted-records admin view** with Restore + Permanent-delete (confirm) actions, reusing the `.action-menu` dropdown.
-- **Team & member management** screens; **role→permission matrix** rendered read-only (and editable for `settings.manage`).
+- **Team & member management** screens; **role→permission matrix** rendered read-only (roles are fixed: Super Admin / Team Admin / Viewer).
 
 ---
 
@@ -204,7 +204,7 @@ There are no deny rules (union only → simple, auditable).
 
 ## 8. Future scalability
 
-- DB-driven roles/permissions → custom roles per org with no deploy.
+- Roles/permissions stored as rows → the matrix can later be opened up to custom roles if needed.
 - The `team_id` scoping + indexes generalize to many teams/users; the choke-point helper means new
   features inherit isolation for free.
 - Clean package seams (`db/`, `rbac.py`, `routes/`) allow swapping SQLite for Postgres, adding background

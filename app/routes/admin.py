@@ -1,29 +1,22 @@
 """
 admin.py — Admin tooling:
-  • /admin/deleted     soft-deleted records: restore or permanently delete
-  • /admin/roles       role → permission matrix (read; editable for settings.manage)
+  • /admin/deleted   soft-deleted records: restore or permanently delete
+  • /admin/roles     read-only reference of the three fixed roles and their permissions
 """
 
 from fasthtml.common import *
 
 from app.db import (
     get_db, get_all_subscriptions, get_subscription, get_all_users,
-    restore_subscription, purge_subscription, role_matrix, set_role_permission, audit,
+    restore_subscription, purge_subscription, audit,
 )
 from app.authz import require
-from app.rbac import PERMISSIONS, ALL_PERMISSIONS, GLOBAL_ROLES, TEAM_ROLES
+from app.rbac import PERMISSIONS, ALL_PERMISSIONS, GLOBAL_ROLES, TEAM_ROLES, ROLE_PERMISSIONS
 from app.components import (
     page_title, nav_bar, section_card, alert, badge, fmt_eur, category_label,
 )
 
 ar = APIRouter()
-
-# Roles shown in the matrix, strongest first. super_admin is hardcoded to ALL in
-# resolve_permissions(), so its column is display-only.
-_MATRIX_ROLES = [(n, l) for n, l, _ in GLOBAL_ROLES] + [(n, l) for n, l, _ in TEAM_ROLES]
-_EDITABLE_ROLES = [n for n, _ in _MATRIX_ROLES if n != "super_admin"]
-# Global-admin powers that must not be handed to team/other roles via the editor.
-_LOCKED_PERMS = {"users.manage", "settings.manage"}
 
 
 # ── Deleted records ──────────────────────────────────────────────────────────
@@ -116,35 +109,26 @@ async def post(req, session, sub_id: int):
                             status_code=303)
 
 
-# ── Role → permission matrix ─────────────────────────────────────────────────
+# ── Roles reference (read-only) ──────────────────────────────────────────────
+
+_MATRIX_ROLES = [(n, l) for n, l, _ in GLOBAL_ROLES] + [(n, l) for n, l, _ in TEAM_ROLES]
+_ROLE_SCOPE = {"super_admin": "Global", "team_admin": "Team", "viewer": "Team"}
+
 
 @ar("/admin/roles")
-def get(req, session, msg: str = ""):
+def get(req, session):
     ctx = req.scope["ctx"]
     if (r := require(ctx, "settings.manage")): return r
-    db = get_db()
-    matrix = role_matrix(db)
-
-    def cell(role, perm):
-        held = perm in matrix.get(role, set())
-        if role == "super_admin":
-            return Td("✓", cls="nowrap", style="color:var(--pico-primary); text-align:center")
-        box = Input(type="checkbox", name=f"{role}::{perm}", checked=held,
-                    style="margin:0")
-        if perm in _LOCKED_PERMS:
-            box.attrs["disabled"] = True
-            box.attrs["title"] = "Reserved for Super Admin"
-            return Td(box, cls="nowrap", style="text-align:center")
-        # Presence marker: only cells actually rendered are reconciled on save, so a
-        # partial/stale POST can never silently mass-revoke un-rendered cells.
-        return Td(box, Input(type="hidden", name=f"present::{role}::{perm}", value="1"),
-                  cls="nowrap", style="text-align:center")
 
     perm_label = {p[0]: p[1] for p in PERMISSIONS}
     perm_cat = {p[0]: p[2] for p in PERMISSIONS}
 
-    rows = []
-    last_cat = None
+    def cell(role, perm):
+        held = perm in ROLE_PERMISSIONS.get(role, set())
+        return Td("✓" if held else "—", cls="nowrap",
+                  style=f"text-align:center; color:{'var(--pico-primary)' if held else 'var(--pico-muted-color)'}")
+
+    rows, last_cat = [], None
     for perm in ALL_PERMISSIONS:
         if perm_cat[perm] != last_cat:
             last_cat = perm_cat[perm]
@@ -155,39 +139,20 @@ def get(req, session, msg: str = ""):
             *[cell(role, perm) for role, _ in _MATRIX_ROLES],
         ))
 
-    table = Form(
-        Table(
-            Thead(Tr(Th("Permission"),
-                     *[Th(label, cls="nowrap") for _, label in _MATRIX_ROLES])),
-            Tbody(*rows),
+    legend = P(*[Span(badge(label, "role"), " ",
+                      Small(f"({_ROLE_SCOPE[name]})  ", style="color:var(--pico-muted-color)"))
+                 for name, label in _MATRIX_ROLES])
+
+    return page_title("Roles"), nav_bar(ctx, "roles"), Main(
+        Div(H2("Roles & Permissions"), cls="page-header"),
+        P("Roles are fixed. Assign a ", Strong("global role"), " (User / Super Admin) on the ",
+          A("Users", href="/users"), " page, and a ", Strong("team role"),
+          " (Team Admin / Viewer) on each team's ", A("Members", href="/teams"), " page."),
+        section_card(
+            legend,
+            Table(
+                Thead(Tr(Th("Permission"), *[Th(label, cls="nowrap") for _, label in _MATRIX_ROLES])),
+                Tbody(*rows),
+            ),
         ),
-        Button("Save matrix", type="submit", style="margin-top:1rem"),
-        method="post", action="/admin/roles",
     )
-
-    return page_title("Roles & Permissions"), nav_bar(ctx, "roles"), Main(
-        Div(H2("Role → Permission Matrix"), cls="page-header"),
-        alert(msg, "success") if msg else "",
-        P(Small("Super Admin always holds every permission (column is read-only). "
-                "User-management and settings permissions are reserved for Super Admin.")),
-        section_card(table),
-    )
-
-
-@ar("/admin/roles")
-async def post(req, session):
-    ctx = req.scope["ctx"]
-    if (r := require(ctx, "settings.manage")): return r
-    db = get_db()
-    form = await req.form()
-    for role in _EDITABLE_ROLES:
-        for perm in ALL_PERMISSIONS:
-            if perm in _LOCKED_PERMS:
-                continue  # never grant/revoke reserved perms via the editor
-            if f"present::{role}::{perm}" not in form:
-                continue  # cell wasn't on the submitted form — leave it untouched
-            set_role_permission(db, role, perm, granted=(f"{role}::{perm}" in form))
-    db.conn.commit()  # release the lock before the audit write opens a new connection
-    audit(ctx, "SETTINGS", "role_matrix", 0, "role matrix",
-          "Updated the role → permission matrix")
-    return RedirectResponse("/admin/roles?msg=Matrix+saved", status_code=303)

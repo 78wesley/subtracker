@@ -39,37 +39,41 @@ PERMISSIONS = [
 ALL_PERMISSIONS = [p[0] for p in PERMISSIONS]
 
 # ── Roles (name, label, rank) ────────────────────────────────────────────────
+# Exactly three assignable roles exist, with fixed (non-editable) permission sets:
+#   • super_admin — global; runs everything across all teams
+#   • team_admin  — per team; full management of their team (subs + members)
+#   • viewer      — per team; read-only
+# 'user' is the implicit baseline for a normal account (no global powers, no
+# permissions of its own) — a valid stored value, but not a seeded/assignable role.
 
-GLOBAL_ROLES = [("super_admin", "Super Admin", 100), ("admin", "Admin", 80), ("user", "User", 10)]
-TEAM_ROLES   = [("team_admin", "Team Admin", 70), ("manager", "Manager", 50), ("viewer", "Viewer", 30)]
+GLOBAL_ROLES = [("super_admin", "Super Admin", 100)]
+TEAM_ROLES   = [("team_admin", "Team Admin", 70), ("viewer", "Viewer", 30)]
 
-GLOBAL_ROLE_NAMES = [r[0] for r in GLOBAL_ROLES]
+BASELINE_GLOBAL_ROLE = "user"
+GLOBAL_ROLE_NAMES = ["super_admin", BASELINE_GLOBAL_ROLE]
 TEAM_ROLE_NAMES   = [r[0] for r in TEAM_ROLES]
 
-_GLOBAL_ROLE_RANK = {name: rank for name, _, rank in GLOBAL_ROLES}
+# Every role name that is a real, seeded role with a permission set.
+CANONICAL_ROLE_NAMES = [r[0] for r in GLOBAL_ROLES] + TEAM_ROLE_NAMES
+
+_GLOBAL_ROLE_RANK = {"super_admin": 100, BASELINE_GLOBAL_ROLE: 10}
 
 
 def global_role_rank(role: str) -> int:
     """Authority rank of a global role (higher = stronger); unknown roles rank 0."""
     return _GLOBAL_ROLE_RANK.get(role, 0)
 
-# ── Default role → permission sets (source of truth for seeding) ─────────────
+# ── Fixed role → permission sets (source of truth for seeding) ───────────────
 
-_VIEWER     = {"subscriptions.view", "teams.view"}
-_MANAGER    = _VIEWER | {"subscriptions.create", "subscriptions.edit", "subscriptions.delete"}
-_TEAM_ADMIN = _MANAGER | {"subscriptions.delete.permanent", "records.restore",
-                          "records.view_deleted", "teams.manage", "audit.view"}
+_VIEWER = {"subscriptions.view", "teams.view"}
 
 ROLE_PERMISSIONS = {
-    # global roles
     "super_admin": set(ALL_PERMISSIONS),
-    "admin": {"subscriptions.view", "records.restore", "records.view_deleted",
-              "teams.view", "teams.manage", "users.view", "audit.view"},
-    "user": set(),                       # capabilities come entirely from team roles
-    # team roles
-    "team_admin": _TEAM_ADMIN,
-    "manager": _MANAGER,
-    "viewer": _VIEWER,
+    "team_admin":  _VIEWER | {"subscriptions.create", "subscriptions.edit",
+                              "subscriptions.delete", "subscriptions.delete.permanent",
+                              "records.restore", "records.view_deleted",
+                              "teams.manage", "audit.view"},
+    "viewer":      _VIEWER,
 }
 
 
@@ -100,7 +104,7 @@ class Ctx:
 
     @property
     def is_global_admin(self):
-        return self.global_role in ("admin", "super_admin")
+        return self.global_role == "super_admin"
 
     def can(self, perm: str) -> bool:
         return perm in self.perms
@@ -125,8 +129,8 @@ def build_ctx(db, user: dict, session: dict) -> Ctx:
     view_all = bool(session.get("view_all")) and user["global_role"] == "super_admin"
 
     # Teams the user may operate on / switch among.
-    if user["global_role"] in ("admin", "super_admin"):
-        teams = [dict(t) for t in list_all_teams(db)]      # admins reach every team
+    if user["global_role"] == "super_admin":
+        teams = [dict(t) for t in list_all_teams(db)]      # super admin reaches every team
     else:
         teams = list_user_teams(db, user["id"])            # members reach their teams
 
@@ -143,6 +147,6 @@ def build_ctx(db, user: dict, session: dict) -> Ctx:
 
 def can_access_team(db, user: dict, team_id: int) -> bool:
     """May this user make `team_id` their active team?"""
-    if user["global_role"] in ("admin", "super_admin"):
+    if user["global_role"] == "super_admin":
         return get_team(db, team_id) is not None
     return get_membership(db, user["id"], team_id) is not None

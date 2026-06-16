@@ -13,17 +13,19 @@ from app.db import (
     count_super_admins, set_global_role, soft_delete_user, audit,
 )
 from app.authz import require
-from app.rbac import GLOBAL_ROLES, GLOBAL_ROLE_NAMES, global_role_rank
+from app.rbac import GLOBAL_ROLE_NAMES, global_role_rank
 from app.components import page_title, nav_bar, alert, badge
 
 ar = APIRouter()
 
-_ROLE_LABEL = {name: label for name, label, _ in GLOBAL_ROLES}
+# Global role is binary: a normal account ("user") or a Super Admin.
+_GLOBAL_ROLE_CHOICES = [("user", "User"), ("super_admin", "Super Admin")]
+_ROLE_LABEL = dict(_GLOBAL_ROLE_CHOICES)
 
 
 def _role_select(name: str, current: str):
-    return Select(*[Option(label, value=rname, selected=(rname == current))
-                    for rname, label, _ in GLOBAL_ROLES],
+    return Select(*[Option(label, value=val, selected=(val == current))
+                    for val, label in _GLOBAL_ROLE_CHOICES],
                   name=name)
 
 
