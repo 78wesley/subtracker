@@ -174,6 +174,10 @@ nav .debug-pill { background: hsl(var(--warning) / 0.15); border: 1px solid hsl(
   color: hsl(38 92% 35%); font-size: .72rem; padding: .15rem .55rem; border-radius: 9999px; }
 nav .team-switch { margin: 0; }
 nav .team-switch select { margin: 0; height: 2rem; padding: 0 1.8rem 0 .6rem; width: auto; font-size: .8rem; }
+.theme-toggle { height: 2rem; padding: 0 .6rem; font-size: 1rem; line-height: 1; }
+.theme-icon-dark { display: none; }
+.dark .theme-icon-dark { display: inline; }
+.dark .theme-icon-light { display: none; }
 
 /* ── Badges ───────────────────────────────────────────────────────────────── */
 .badge { display: inline-flex; align-items: center; padding: .12rem .55rem; border-radius: 9999px;

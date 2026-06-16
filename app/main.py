@@ -37,11 +37,29 @@ tailwind.config = {
 }
 """
 
+# Applies the saved/preferred theme to <html> before the body renders (no flash),
+# and defines the nav toggle handler. shadcn dark mode = a `.dark` class on <html>.
+THEME_JS = """
+(function () {
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'dark' || (t === null && window.matchMedia &&
+        matchMedia('(prefers-color-scheme: dark)').matches))
+      document.documentElement.classList.add('dark');
+  } catch (e) {}
+})();
+function toggleTheme() {
+  var dark = document.documentElement.classList.toggle('dark');
+  try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch (e) {}
+}
+"""
+
 app, rt = fast_app(
     secret_key=SECRET_KEY,
     pico=False,
     hdrs=(
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
+        Script(THEME_JS),
         Script(src="https://cdn.tailwindcss.com"),
         Script(TAILWIND_CONFIG),
         Style(CSS),
