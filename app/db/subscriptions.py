@@ -11,6 +11,7 @@ with its own start/end dates and amount. "Active" and "current price" are derive
 from these periods relative to a reference date — there is no stored is_active flag.
 """
 
+import math
 from datetime import date, timedelta
 
 from app import timeutil
@@ -160,10 +161,23 @@ def validate_periods(periods: list) -> str:
     else "". `periods` is a list of dicts with start_date and (nullable) end_date.
     """
     for p in periods:
-        if not p.get("start_date"):
+        amt = p.get("amount")
+        try:
+            amt_ok = amt is not None and math.isfinite(float(amt)) and float(amt) >= 0
+        except (TypeError, ValueError):
+            amt_ok = False
+        if not amt_ok:
+            return "Amount must be a number that is zero or more."
+        sd = p.get("start_date")
+        if not sd:
             return "Every period needs a start date."
-        if p.get("end_date") and p["end_date"] < p["start_date"]:
-            return f"Period starting {p['start_date']} ends before it begins."
+        if not timeutil.valid_iso_date(sd):
+            return f"Invalid start date '{sd}' — use the YYYY-MM-DD format."
+        ed = p.get("end_date")
+        if ed and not timeutil.valid_iso_date(ed):
+            return f"Invalid end date '{ed}' — use the YYYY-MM-DD format."
+        if ed and ed < sd:
+            return f"Period starting {sd} ends before it begins."
     ordered = sorted(periods, key=lambda p: p["start_date"])
     for prev, nxt in zip(ordered, ordered[1:]):
         # An open-ended earlier period swallows everything after it.
@@ -183,6 +197,13 @@ def add_period(db, subscription_id: int, amount: float, start_date: str,
     this models a price change. `note` describes any such auto-close (else "").
     Genuine overlaps with bounded periods are still rejected.
     """
+    # Validate date formats up front so the date.fromisoformat below can't throw
+    # (a malformed imported/posted date would otherwise crash the request).
+    if not timeutil.valid_iso_date(start_date):
+        return f"Invalid start date '{start_date}' — use the YYYY-MM-DD format.", ""
+    if end_date and not timeutil.valid_iso_date(end_date):
+        return f"Invalid end date '{end_date}' — use the YYYY-MM-DD format.", ""
+
     candidate = {"start_date": start_date, "end_date": end_date or None, "amount": amount}
     existing = get_periods(db, subscription_id)
 

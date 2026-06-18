@@ -15,6 +15,7 @@ period columns may repeat the same identity fields across several rows.
 import csv
 import io
 import json
+import math
 
 from fasthtml.common import *
 
@@ -23,7 +24,7 @@ from app.db import (
     get_db, get_all_subscriptions, get_periods_map, add_period, audit,
 )
 from app.authz import require, writable_team
-from app.cost_utils import FREQUENCIES, BASE_UNITS
+from app.cost_utils import normalise_cadence
 from app.components import page_title, nav_bar, section_card, alert
 from app.styles import PAGE_HEADER, LINK, INPUT, MUTED_SM, btn
 
@@ -32,6 +33,25 @@ ar = APIRouter()
 # Identity/cadence fields first, then the period columns (blank for sub-less rows).
 CSV_COLUMNS = ["name", "category", "frequency", "interval", "base_unit", "notes",
                "amount", "start_date", "end_date"]
+
+# Leading characters a spreadsheet may interpret as a formula (CSV injection). A
+# field starting with one is prefixed with a single quote on export and unwrapped
+# on import, so it stays inert in Excel/Sheets while still round-tripping cleanly.
+_CSV_RISKY = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value) -> str:
+    s = "" if value is None else str(value)
+    return "'" + s if s[:1] in _CSV_RISKY else s
+
+
+def _csv_unwrap(value: str) -> str:
+    return value[1:] if len(value) >= 2 and value[0] == "'" and value[1] in _CSV_RISKY else value
+
+
+# Bound a single import so a huge upload can't exhaust memory or create unbounded rows.
+MAX_IMPORT_BYTES = 5 * 1024 * 1024  # 5 MB
+MAX_IMPORT_SUBS = 2000
 
 _FILE_INPUT = ("block w-full text-sm text-muted-foreground file:mr-3 file:rounded-md "
                "file:border-0 file:bg-primary file:text-primary-foreground file:px-3 "
@@ -52,8 +72,8 @@ def _to_csv(subs, periods_map) -> str:
     w = csv.writer(buf)
     w.writerow(CSV_COLUMNS)
     for s in subs:
-        base = [s["name"], s.get("category") or "", s["frequency"], s["interval"] or 1,
-                s.get("base_unit") or "", s.get("notes") or ""]
+        base = [_csv_safe(s["name"]), _csv_safe(s.get("category") or ""), s["frequency"],
+                s["interval"] or 1, s.get("base_unit") or "", _csv_safe(s.get("notes") or "")]
         periods = periods_map.get(s["id"], [])
         if periods:
             for p in periods:
@@ -110,18 +130,18 @@ def _parse_csv(text: str) -> tuple:
     errors, groups, order = [], {}, []
     reader = csv.DictReader(io.StringIO(text))
     for i, row in enumerate(reader, start=2):  # row 1 is the header
-        name = (row.get("name") or "").strip()
+        name = _csv_unwrap((row.get("name") or "").strip())
         if not name:
             errors.append(f"Row {i}: missing name — skipped.")
             continue
         if name not in groups:
             groups[name] = {
                 "name": name,
-                "category": (row.get("category") or "").strip() or None,
+                "category": _csv_unwrap((row.get("category") or "").strip()) or None,
                 "frequency": (row.get("frequency") or "monthly").strip(),
                 "interval": row.get("interval") or 1,
                 "base_unit": (row.get("base_unit") or "").strip(),
-                "notes": (row.get("notes") or "").strip(),
+                "notes": _csv_unwrap((row.get("notes") or "").strip()),
                 "periods": [],
             }
             order.append(name)
@@ -131,6 +151,8 @@ def _parse_csv(text: str) -> tuple:
             continue  # identity-only row (subscription with no periods)
         try:
             amt = float(amount)
+            if not math.isfinite(amt):
+                raise ValueError
         except ValueError:
             errors.append(f"Row {i} ({name}): invalid amount '{amount}' — period skipped.")
             continue
@@ -161,6 +183,8 @@ def _parse_json(text: str) -> tuple:
             start = (str(p.get("start_date") or "")).strip()
             try:
                 amt = float(p.get("amount"))
+                if not math.isfinite(amt):
+                    raise ValueError
             except (TypeError, ValueError):
                 errors.append(f"'{name}': period has an invalid amount — skipped.")
                 continue
@@ -179,27 +203,13 @@ def _parse_json(text: str) -> tuple:
     return subs, errors
 
 
-def _norm_cadence(frequency, interval, base_unit) -> tuple:
-    """Clean an imported (frequency, interval, base_unit) triple for storage."""
-    frequency = frequency if frequency in FREQUENCIES else "monthly"
-    if frequency == "custom":
-        base_unit = base_unit if base_unit in BASE_UNITS else "monthly"
-        try:
-            interval = max(1, int(interval))
-        except (TypeError, ValueError):
-            interval = 1
-    else:
-        frequency, interval, base_unit = frequency, 1, None
-    return frequency, interval, base_unit
-
-
 def _import_subs(db, ctx, parsed) -> tuple:
     """Create each parsed subscription + its periods. Returns (created, periods, errors)."""
     created, periods_added, errors = 0, 0, []
     now = timeutil.now_iso()
     for sub in parsed:
-        freq, interval, base_unit = _norm_cadence(sub["frequency"], sub["interval"],
-                                                  sub["base_unit"])
+        freq, interval, base_unit = normalise_cadence(sub["frequency"], sub["interval"],
+                                                       sub["base_unit"])
         category = (sub.get("category") or None)
         if isinstance(category, str):
             category = category.strip() or None
@@ -223,7 +233,7 @@ def _import_subs(db, ctx, parsed) -> tuple:
         created += 1
         audit(ctx, "CREATE", "subscription", sub_id, sub["name"],
               f"Imported '{sub['name']}' with {n} period(s)",
-              new_values={"name": sub["name"], "frequency": freq, "category": category})
+              new_values={"name": sub["name"], "frequency": freq, "category": category}, db=db)
     return created, periods_added, errors
 
 
@@ -316,6 +326,9 @@ async def post(req, session):
         return _page(ctx, alert("Choose a CSV or JSON file to import.", "error"))
 
     raw = await upload.read()
+    if len(raw) > MAX_IMPORT_BYTES:
+        return _page(ctx, alert(f"File is too large (max {MAX_IMPORT_BYTES // (1024 * 1024)} MB).",
+                                "error"))
     try:
         text = raw.decode("utf-8-sig")  # tolerate a UTF-8 BOM (e.g. from Excel)
     except UnicodeDecodeError:
@@ -329,6 +342,9 @@ async def post(req, session):
 
     if not parsed:
         return _page(ctx, _result_block(0, 0, errors or ["No subscriptions found in the file."]))
+    if len(parsed) > MAX_IMPORT_SUBS:
+        return _page(ctx, alert(f"Too many subscriptions in one import ({len(parsed)}); "
+                                f"the limit is {MAX_IMPORT_SUBS}.", "error"))
 
     created, periods_added, import_errors = _import_subs(db=get_db(), ctx=ctx, parsed=parsed)
     return _page(ctx, _result_block(created, periods_added, errors + import_errors))

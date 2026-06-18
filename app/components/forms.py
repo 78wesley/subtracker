@@ -19,8 +19,10 @@ def _field(label, control):
 
 
 def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save",
-                      categories: list = None, include_period: bool = False) -> Form:
+                      categories: list = None, include_period: bool = False,
+                      period: dict = None) -> Form:
     s = sub or {}
+    p = period or {}
     today_val = timeutil.today_iso()
     categories = categories or []
 
@@ -35,11 +37,12 @@ def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save"
     # Create-only: the subscription's first period (amount + dates).
     period_block = Div(
         _field("Amount (€) *", Input(name="amount", type="number", step="0.01",
-               min="0", value="", required=True, cls=INPUT)),
+               min="0", value=p.get("amount", ""), required=True, cls=INPUT)),
         Div(
             _field("Start Date *", Input(name="start_date", type="date",
-                   value=today_val, required=True, cls=INPUT)),
-            _field("End Date", Input(name="end_date", type="date", value="", cls=INPUT)),
+                   value=p.get("start_date", today_val), required=True, cls=INPUT)),
+            _field("End Date", Input(name="end_date", type="date",
+                   value=p.get("end_date", ""), cls=INPUT)),
             cls="grid gap-4 sm:grid-cols-2",
         ),
         P("This is the subscription's first active period. Add more periods "

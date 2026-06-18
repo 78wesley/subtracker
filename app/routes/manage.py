@@ -5,6 +5,8 @@ Status and the displayed price are derived from each subscription's periods
 (see app.db.subscriptions): a sub is active when a period covers today.
 """
 
+from urllib.parse import urlencode
+
 from fasthtml.common import *
 
 from app import timeutil
@@ -16,11 +18,12 @@ from app.authz import require
 from app.cost_utils import frequency_label
 from app.components import (
     page_title, nav_bar, badge, status_badge, action_menu,
-    select_menu, fmt_eur, category_label,
+    select_menu, fmt_eur, category_label, pagination_bar,
 )
 from app.styles import PAGE_HEADER, TABLE, CONTROL, btn
 
 _FF = "grid gap-1.5 text-sm font-medium"  # filter field (label + control)
+_PER_PAGE = 20  # subscriptions per page in the manage list
 
 # lucide arrow-up-right — signals the name links through to the detail page.
 _OPEN_ICON = NotStr(
@@ -60,7 +63,7 @@ ar = APIRouter()
 # ── Manage list ──────────────────────────────────────────────────────────────
 
 @ar("/manage")
-def get(req, session, q: str = "", status: str = "all", category: str = ""):
+def get(req, session, q: str = "", status: str = "all", category: str = "", page: int = 1):
     ctx = req.scope["ctx"]
     if (r := require(ctx, "subscriptions.view")): return r
     db = get_db()
@@ -77,9 +80,14 @@ def get(req, session, q: str = "", status: str = "all", category: str = ""):
                                  filter_active=status if status != "all" else None,
                                  search=q or None,
                                  category=category or None)
-    periods_map = get_periods_map(db, [s["id"] for s in subs])
+
+    total_pages = max(1, (len(subs) + _PER_PAGE - 1) // _PER_PAGE)
+    page = max(1, min(page, total_pages))
+    page_subs = subs[(page - 1) * _PER_PAGE: page * _PER_PAGE]
+
+    periods_map = get_periods_map(db, [s["id"] for s in page_subs])
     rows = []
-    for s in subs:
+    for s in page_subs:
         periods = periods_map.get(s["id"], [])
         price = current_price(periods, today)
         active = is_active_on(periods, today)
@@ -138,10 +146,14 @@ def get(req, session, q: str = "", status: str = "all", category: str = ""):
         method="get", action="/manage",
     )
 
+    base_url = "/manage?" + urlencode({"q": q, "status": status, "category": category})
+    pager = pagination_bar(page, total_pages, base_url) if total_pages > 1 else ""
+
     return page_title("Manage"), nav_bar(ctx, "manage"), Main(
         Div(H2("Manage Subscriptions"),
             A("Import / Export", href="/import", role="button", cls=btn("outline")),
             cls=PAGE_HEADER),
         filter_bar,
         table,
+        pager,
     )

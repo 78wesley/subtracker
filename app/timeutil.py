@@ -43,3 +43,14 @@ def now_iso() -> str:
 def get_debug_date() -> str | None:
     """Return the currently active debug date string, or None."""
     return _debug_date
+
+
+def valid_iso_date(s: str) -> bool:
+    """True if `s` is a parseable 'YYYY-MM-DD' date string."""
+    if not isinstance(s, str):
+        return False
+    try:
+        date.fromisoformat(s)
+        return True
+    except ValueError:
+        return False

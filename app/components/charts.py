@@ -6,6 +6,11 @@ charts.py — Inline SVG / CSS charts, styled with shadcn token utilities
 from fasthtml.common import *
 from fasthtml.svg import Svg, Rect, Line, Text, Polyline, Polygon, Circle
 
+# Shared SVG viewBox geometry for line_chart / bar_chart. The charts scale to their
+# container via `w-full` + viewBox; these are the internal coordinate units only.
+_CHART_W = 640                              # viewBox width
+_PAD_L, _PAD_R, _PAD_T, _PAD_B = 48, 12, 12, 28  # plot insets (left axis labels, etc.)
+
 
 def line_chart(labels: list, values: list, *, height: int = 220,
                fmt=lambda v: f"€{v:,.0f}") -> object:
@@ -17,8 +22,8 @@ def line_chart(labels: list, values: list, *, height: int = 220,
         return P("No data for this period.", cls="text-muted-foreground text-center py-8")
 
     n = len(values)
-    W, H = 640, height
-    pad_l, pad_r, pad_t, pad_b = 48, 12, 12, 28
+    W, H = _CHART_W, height
+    pad_l, pad_r, pad_t, pad_b = _PAD_L, _PAD_R, _PAD_T, _PAD_B
     plot_w = W - pad_l - pad_r
     plot_h = H - pad_t - pad_b
     vmax = max(values)
@@ -55,8 +60,8 @@ def bar_chart(labels: list, values: list, *, height: int = 220,
         return P("No data for this period.", cls="text-muted-foreground text-center py-8")
 
     n = len(values)
-    W, H = 640, height
-    pad_l, pad_r, pad_t, pad_b = 48, 12, 12, 28
+    W, H = _CHART_W, height
+    pad_l, pad_r, pad_t, pad_b = _PAD_L, _PAD_R, _PAD_T, _PAD_B
     plot_w = W - pad_l - pad_r
     plot_h = H - pad_t - pad_b
     vmax = max(values)

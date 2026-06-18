@@ -12,6 +12,29 @@ from app.styles import (
 )
 
 
+def _team_options(ctx) -> list:
+    """(value, label, is_selected) for each team the caller can switch to.
+
+    Super admins additionally get an 'All teams' (cross-team view) option."""
+    options = []
+    if ctx.is_super:
+        options.append(("__all__", "🌐 All teams", ctx.view_all))
+    for t in ctx.teams:
+        options.append((str(t["id"]), t["name"],
+                        (not ctx.view_all and t["id"] == ctx.active_team_id)))
+    return options
+
+
+def _team_switch_items(options) -> list:
+    """The team options as POST-on-click DropdownMenu entries (one form each)."""
+    return [
+        Form(Button(lbl, type="submit", name="team_id", value=val,
+                    cls=menu_item_cls(active=sel)),
+             method="post", action="/teams/switch", cls="m-0")
+        for val, lbl, sel in options
+    ]
+
+
 def team_switcher(ctx):
     """
     Active-team picker as a shadcn DropdownMenu (matching the Manage Actions menu).
@@ -20,26 +43,12 @@ def team_switcher(ctx):
     """
     if not ctx.teams:
         return Span("No team", cls=badge_cls("warn"))
-    options = []  # (value, label, is_selected)
-    if ctx.is_super:
-        options.append(("__all__", "🌐 All teams", ctx.view_all))
-    for t in ctx.teams:
-        options.append((str(t["id"]), t["name"],
-                        (not ctx.view_all and t["id"] == ctx.active_team_id)))
+    options = _team_options(ctx)
     if len(options) <= 1:
         return Span(ctx.active_team_name or ctx.teams[0]["name"],
                     cls="text-sm text-muted-foreground")
-
     current = next((lbl for _, lbl, sel in options if sel), options[0][1])
-    items = [
-        Form(
-            Button(lbl, type="submit", name="team_id", value=val,
-                   cls=menu_item_cls(active=sel)),
-            method="post", action="/teams/switch", cls="m-0",
-        )
-        for val, lbl, sel in options
-    ]
-    return dropdown_menu(current, *items)
+    return dropdown_menu(current, *_team_switch_items(options))
 
 
 def theme_toggle() -> Button:
@@ -82,22 +91,8 @@ def _sep():
 
 def _team_menu_items(ctx) -> list:
     """Team-switch options as DropdownMenu submit buttons (empty if no real choice)."""
-    if not ctx.teams:
-        return []
-    options = []
-    if ctx.is_super:
-        options.append(("__all__", "🌐 All teams", ctx.view_all))
-    for t in ctx.teams:
-        options.append((str(t["id"]), t["name"],
-                        (not ctx.view_all and t["id"] == ctx.active_team_id)))
-    if len(options) <= 1:
-        return []
-    return [
-        Form(Button(lbl, type="submit", name="team_id", value=val,
-                    cls=menu_item_cls(active=sel)),
-             method="post", action="/teams/switch", cls="m-0")
-        for val, lbl, sel in options
-    ]
+    options = _team_options(ctx) if ctx.teams else []
+    return _team_switch_items(options) if len(options) > 1 else []
 
 
 def _mobile_menu(ctx, active: str, role_label: str):
@@ -119,7 +114,7 @@ def _mobile_menu(ctx, active: str, role_label: str):
             cls="px-2 py-1"),
         A("Logout", href="/logout", role="menuitem", cls=menu_item_cls()),
     ]
-    return dropdown_menu(_MENU_ICON, *items)
+    return dropdown_menu(Span(_MENU_ICON, Span("Open menu", cls="sr-only")), *items)
 
 
 def nav_bar(ctx, active: str = "") -> Nav:

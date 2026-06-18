@@ -16,8 +16,10 @@ def write_audit_log(actor_user_id: int, actor_name: str, action: str,
                     entity_type: str, entity_id: int, entity_name: str,
                     description: str, old_values=None, new_values=None,
                     actor_global_role: str = None,
-                    team_id: int = None, team_name: str = None) -> None:
-    get_db()["audit_log"].insert({
+                    team_id: int = None, team_name: str = None, db=None) -> None:
+    # Reuse the caller's connection when given one (e.g. a bulk import loop) instead
+    # of opening a fresh SQLite connection per audited row.
+    (db or get_db())["audit_log"].insert({
         "actor_user_id":     actor_user_id,
         "actor_name":        actor_name,
         "actor_global_role": actor_global_role,
@@ -36,14 +38,16 @@ def write_audit_log(actor_user_id: int, actor_name: str, action: str,
 
 def audit(ctx, action: str, entity_type: str, entity_id: int, entity_name: str,
           description: str, old_values=None, new_values=None,
-          team_id: int = None, team_name: str = None) -> None:
-    """Convenience wrapper that snapshots actor + team from the request context."""
+          team_id: int = None, team_name: str = None, db=None) -> None:
+    """Convenience wrapper that snapshots actor + team from the request context.
+
+    Pass `db` to reuse an open connection (e.g. inside a bulk-import loop)."""
     write_audit_log(
         ctx.user["id"], ctx.user["username"], action, entity_type, entity_id,
         entity_name, description, old_values=old_values, new_values=new_values,
         actor_global_role=ctx.user["global_role"],
         team_id=team_id if team_id is not None else ctx.active_team_id,
-        team_name=team_name if team_name is not None else ctx.active_team_name)
+        team_name=team_name if team_name is not None else ctx.active_team_name, db=db)
 
 
 def get_audit_for_entity(db, entity_id: int, entity_type: str) -> list:

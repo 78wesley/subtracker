@@ -52,6 +52,25 @@ def resolve(frequency: str, interval: int = 1, base_unit: str = None) -> tuple:
     return frequency, 1
 
 
+def normalise_cadence(frequency: str, interval=1, base_unit: str = None) -> tuple:
+    """Clean a submitted/imported (frequency, interval, base_unit) triple for storage.
+
+    A named preset always means "every 1 unit" with no base_unit. "custom" keeps a
+    positive-integer interval and a valid base_unit (defaulting to monthly). Tolerates
+    a non-integer `interval` (e.g. a string from an imported CSV). Returns the cleaned
+    (frequency, interval, base_unit).
+    """
+    frequency = frequency if frequency in FREQUENCIES else "monthly"
+    if frequency != "custom":
+        return frequency, 1, None
+    base_unit = base_unit if base_unit in BASE_UNITS else "monthly"
+    try:
+        interval = max(1, int(interval))
+    except (TypeError, ValueError):
+        interval = 1
+    return frequency, interval, base_unit
+
+
 # ── Cost normalisation ───────────────────────────────────────────────────────
 
 def get_annual_cost(amount: float, frequency: str, interval: int = 1,

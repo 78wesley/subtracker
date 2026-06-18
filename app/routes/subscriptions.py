@@ -15,12 +15,12 @@ from fasthtml.common import *
 from app import timeutil
 from app.db import (
     get_db, get_subscription, get_periods, current_price, is_active_on,
-    add_period, update_period, delete_period,
+    add_period, update_period, delete_period, validate_periods,
     get_audit_for_entity, get_categories, audit,
 )
 from app.authz import require, writable_team
 from app.cost_utils import (
-    FREQUENCIES, BASE_UNITS, frequency_label, get_period_cost,
+    frequency_label, get_period_cost, normalise_cadence,
     upcoming_payments_for_periods, monthly_costs_for_year, year_cost, range_cost,
 )
 from app.components import (
@@ -32,18 +32,6 @@ from app.styles import PAGE_HEADER, TABLE, TABLE_WRAP, INPUT, TEXTAREA, LINK, MU
 ar = APIRouter()
 
 _PERIODS = ["daily", "weekly", "monthly", "quarterly", "yearly"]
-
-
-def _normalise_cadence(frequency: str, interval: int, base_unit: str) -> tuple:
-    """Clean a submitted (frequency, interval, base_unit) triple for storage."""
-    frequency = frequency if frequency in FREQUENCIES else "monthly"
-    if frequency == "custom":
-        base_unit_val = base_unit if base_unit in BASE_UNITS else "monthly"
-        interval_val = max(1, interval)
-    else:
-        base_unit_val = None
-        interval_val = 1
-    return frequency, interval_val, base_unit_val
 
 
 def _detail_redirect(sub_id: int, msg: str = "", kind: str = "warning"):
@@ -85,8 +73,25 @@ async def post(req, session, name: str, amount: float, start_date: str,
                                 status_code=303)
     db = get_db()
     now = timeutil.now_iso()
-    frequency, interval_val, base_unit_val = _normalise_cadence(frequency, interval, base_unit)
+    frequency, interval_val, base_unit_val = normalise_cadence(frequency, interval, base_unit)
     category_val = category.strip() or None
+
+    # Validate the first period before creating anything, so a bad date or amount
+    # re-renders the form (with the entered values) instead of leaving a
+    # period-less subscription behind.
+    err = validate_periods([{"start_date": start_date, "end_date": end_date or None,
+                             "amount": amount}])
+    if err:
+        return page_title("New Subscription"), nav_bar(ctx, "manage"), Main(
+            Div(H2("Add Subscription"), A("← Manage", href="/manage", cls=LINK), cls=PAGE_HEADER),
+            alert(err, "error"),
+            subscription_form(
+                "/manage/new", btn_label="Create Subscription",
+                categories=get_categories(db, ctx), include_period=True,
+                sub={"name": name, "category": category_val, "frequency": frequency,
+                     "interval": interval_val, "base_unit": base_unit_val, "notes": notes},
+                period={"amount": amount, "start_date": start_date, "end_date": end_date or ""}),
+        )
 
     sub_id = db["subscriptions"].insert({
         "team_id": ctx.active_team_id, "created_by": ctx.user["id"],
@@ -139,7 +144,7 @@ async def post(req, session, sub_id: int, name: str, frequency: str = "monthly",
     if not sub:
         return RedirectResponse("/manage", status_code=303)
 
-    frequency, interval_val, base_unit_val = _normalise_cadence(frequency, interval, base_unit)
+    frequency, interval_val, base_unit_val = normalise_cadence(frequency, interval, base_unit)
     category_val = category.strip() or None
     fields = ["name", "category", "frequency", "interval", "base_unit", "notes"]
     old = {k: sub[k] for k in fields}
@@ -361,8 +366,10 @@ def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
             Td(
                 Div(
                     A("✏️", href=f"/subscriptions/{sub_id}/periods/{p['id']}/edit",
-                      role="button", cls=btn("outline", "sm"), title="Edit period"),
+                      role="button", cls=btn("outline", "sm"), title="Edit period",
+                      **{"aria-label": "Edit period"}),
                     Button("🗑️", cls=btn("outline", "sm"), title="Delete period",
+                           **{"aria-label": "Delete period"},
                            hx_post=f"/subscriptions/{sub_id}/periods/{p['id']}/delete",
                            hx_confirm=f"Delete period {fmt_eur(p['amount'])} from {p['start_date']}?",
                            hx_target="body", hx_push_url="true"),

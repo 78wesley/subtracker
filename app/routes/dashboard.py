@@ -39,7 +39,8 @@ def _year_analytics(db, ctx, year: int) -> dict:
     periods_map = get_periods_map(db, [s["id"] for s in subs])
     today = timeutil.today_iso()
 
-    per_sub, per_cat, per_freq, months, yearly_total = [], {}, {}, [0.0] * 12, 0.0
+    per_sub, per_cat, per_freq, months = [], {}, {}, [0.0] * 12
+    yearly_total, prev_total = 0.0, 0.0
     run_rate_annual, active_count = 0.0, 0
 
     for s in subs:
@@ -53,7 +54,12 @@ def _year_analytics(db, ctx, year: int) -> dict:
                 run_rate_annual += get_annual_cost(
                     price, s["frequency"], s.get("interval") or 1, s.get("base_unit"))
 
-        sub_year = year_cost(s, periods, year)
+        # One pass over each subscription's periods yields both the prior-year total
+        # (for the YoY delta) and this year's 12 monthly costs; the year total is just
+        # their sum, so it stays consistent with the bars and needs no extra walk.
+        prev_total += year_cost(s, periods, year - 1)
+        sub_months = monthly_costs_for_year(s, periods, year)
+        sub_year = round(sum(sub_months), 2)
         if sub_year <= 0:
             continue
         per_sub.append((s["name"], sub_year))
@@ -63,12 +69,10 @@ def _year_analytics(db, ctx, year: int) -> dict:
                                  s.get("interval") or 1, s.get("base_unit"))
         per_freq[flabel] = round(per_freq.get(flabel, 0.0) + sub_year, 2)
         yearly_total += sub_year
-        for i, m in enumerate(monthly_costs_for_year(s, periods, year)):
+        for i, m in enumerate(sub_months):
             months[i] += m
 
-    prev_total = round(
-        sum(year_cost(s, periods_map.get(s["id"], []), year - 1) for s in subs), 2)
-
+    prev_total = round(prev_total, 2)
     yearly_total = round(yearly_total, 2)
     months = [round(m, 2) for m in months]
     run_rate_annual = round(run_rate_annual, 2)
