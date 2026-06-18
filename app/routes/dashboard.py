@@ -5,10 +5,10 @@ dashboard.py — Spend dashboard: cost cards, monthly chart, breakdowns.
 from fasthtml.common import *
 
 from app import timeutil
-from app.db import get_db, get_all_subscriptions, get_price_history
+from app.db import get_db, get_all_subscriptions, get_periods_map
 from app.authz import require
 from app.cost_utils import (
-    year_cost_with_price_history, monthly_costs_for_year, frequency_label,
+    year_cost, monthly_costs_for_year, frequency_label,
 )
 from app.components import (
     page_title, nav_bar, section_card, fmt_eur, category_label,
@@ -28,11 +28,12 @@ def _year_analytics(db, ctx, year: int) -> dict:
     active window. Returns period_costs, yearly_total, per_sub, per_cat, months.
     """
     subs = get_all_subscriptions(db, ctx)
+    periods_map = get_periods_map(db, [s["id"] for s in subs])
     per_sub, per_cat, per_freq, months, yearly_total = [], {}, {}, [0.0] * 12, 0.0
 
     for s in subs:
-        history = get_price_history(db, s["id"])
-        sub_year = year_cost_with_price_history(s, history, year)
+        periods = periods_map.get(s["id"], [])
+        sub_year = year_cost(s, periods, year)
         if sub_year <= 0:
             continue
         per_sub.append((s["name"], sub_year))
@@ -42,7 +43,7 @@ def _year_analytics(db, ctx, year: int) -> dict:
                                  s.get("interval") or 1, s.get("base_unit"))
         per_freq[flabel] = round(per_freq.get(flabel, 0.0) + sub_year, 2)
         yearly_total += sub_year
-        for i, m in enumerate(monthly_costs_for_year(s, history, year)):
+        for i, m in enumerate(monthly_costs_for_year(s, periods, year)):
             months[i] += m
 
     yearly_total = round(yearly_total, 2)

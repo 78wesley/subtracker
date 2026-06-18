@@ -12,7 +12,8 @@ from app.db.users import (
 )
 from app.db.subscriptions import (
     get_subscription, get_active_subscriptions, get_all_subscriptions,
-    get_categories, get_active_price, get_price_history, delete_price_history_entry,
+    get_categories, get_periods, get_periods_map, is_active_on, current_price,
+    validate_periods, add_period, update_period, delete_period,
     restore_subscription, purge_subscription,
 )
 from app.db.teams import (
@@ -33,8 +34,9 @@ __all__ = [
     "get_user_by_username", "get_user_by_id", "get_all_users", "username_taken",
     "count_super_admins", "set_global_role", "soft_delete_user",
     "get_subscription", "get_active_subscriptions", "get_all_subscriptions",
-    "get_categories", "get_active_price", "get_price_history",
-    "delete_price_history_entry", "restore_subscription", "purge_subscription",
+    "get_categories", "get_periods", "get_periods_map", "is_active_on",
+    "current_price", "validate_periods", "add_period", "update_period",
+    "delete_period", "restore_subscription", "purge_subscription",
     "get_team", "list_all_teams", "list_user_teams", "get_membership",
     "list_team_members", "count_team_admins", "member_count", "create_team",
     "add_member", "set_member_role", "remove_member", "get_membership_by_id",

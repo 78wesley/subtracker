@@ -1,5 +1,9 @@
 """
 forms.py — Shared subscription form (new & edit), styled with shadcn utilities.
+
+The create form additionally collects the subscription's first period (start/end/
+amount); the edit form covers identity/cadence metadata only. Further periods are
+added and edited on the subscription detail page.
 """
 
 from fasthtml.common import *
@@ -15,7 +19,7 @@ def _field(label, control):
 
 
 def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save",
-                      categories: list = None) -> Form:
+                      categories: list = None, include_period: bool = False) -> Form:
     s = sub or {}
     today_val = timeutil.today_iso()
     categories = categories or []
@@ -28,21 +32,26 @@ def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save"
     def freq_option_label(u):
         return "Custom…" if u == "custom" else frequency_label(u)
 
-    return Form(
-        Div(
-            _field("Name *", Input(name="name", value=s.get("name", ""),
-                   required=True, placeholder="e.g. Netflix", cls=INPUT)),
-            _field("Amount (€) *", Input(name="amount", type="number", step="0.01",
-                   min="0", value=s.get("amount", ""), required=True, cls=INPUT)),
-            cls="grid gap-4 sm:grid-cols-2",
-        ),
+    # Create-only: the subscription's first period (amount + dates).
+    period_block = Div(
+        _field("Amount (€) *", Input(name="amount", type="number", step="0.01",
+               min="0", value="", required=True, cls=INPUT)),
         Div(
             _field("Start Date *", Input(name="start_date", type="date",
-                   value=s.get("start_date", today_val), required=True, cls=INPUT)),
-            _field("End Date", Input(name="end_date", type="date",
-                   value=s.get("end_date") or "", cls=INPUT)),
+                   value=today_val, required=True, cls=INPUT)),
+            _field("End Date", Input(name="end_date", type="date", value="", cls=INPUT)),
             cls="grid gap-4 sm:grid-cols-2",
         ),
+        P("This is the subscription's first active period. Add more periods "
+          "(e.g. after a break or a price change) from the detail page.",
+          cls="text-sm text-muted-foreground"),
+        cls="grid gap-4 rounded-lg border bg-muted/30 p-4",
+    ) if include_period else ""
+
+    return Form(
+        _field("Name *", Input(name="name", value=s.get("name", ""),
+               required=True, placeholder="e.g. Netflix", cls=INPUT)),
+        period_block,
         _field("Frequency", select_menu(
             "frequency", [(u, freq_option_label(u)) for u in FREQUENCIES],
             value=freq, width="w-full",
@@ -68,13 +77,6 @@ def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save"
         Datalist(*[Option(value=c) for c in categories], id="category-options"),
         _field("Notes", Textarea(s.get("notes") or "", name="notes", rows=3,
                placeholder="Optional notes…", cls=TEXTAREA)),
-        Label(
-            Input(type="checkbox", name="is_active", value="1",
-                  checked=(s.get("is_active", 1) in (1, True, "1")),
-                  cls="h-4 w-4 rounded border-input", style="accent-color:hsl(var(--primary))"),
-            "Active subscription",
-            cls="flex items-center gap-2 text-sm font-medium",
-        ),
         Button(btn_label, type="submit", cls=btn()),
         method="post", action=action_url, cls="grid gap-4 max-w-2xl",
     )

@@ -1,22 +1,27 @@
 """
-subscriptions.py — Create / edit / price-change / detail / soft-delete a subscription.
+subscriptions.py — Create / edit / period management / detail / soft-delete.
 
-All reads go through the team-scoped get_subscription(db, ctx, ...); all writes are
-gated by a permission via require(ctx, ...) and audited with team context.
+A subscription carries identity + cadence; its dated active windows and prices live
+in subscription_periods (multiple, non-overlapping). "Active" and "current price"
+are derived from those periods. All reads go through the team-scoped
+get_subscription(db, ctx, ...); all writes are gated by require(ctx, ...) and audited.
 """
 
-from datetime import timedelta
+from datetime import date
+from urllib.parse import quote_plus
 
 from fasthtml.common import *
 
 from app import timeutil
 from app.db import (
-    get_db, get_subscription, get_active_price, get_price_history,
-    get_audit_for_entity, get_categories, delete_price_history_entry, audit,
+    get_db, get_subscription, get_periods, current_price, is_active_on,
+    add_period, update_period, delete_period,
+    get_audit_for_entity, get_categories, audit,
 )
 from app.authz import require, writable_team
 from app.cost_utils import (
-    FREQUENCIES, BASE_UNITS, frequency_label, get_period_cost, next_payment_date,
+    FREQUENCIES, BASE_UNITS, frequency_label, get_period_cost,
+    upcoming_payments_for_periods,
 )
 from app.components import (
     page_title, nav_bar, section_card, collapsible_card, alert, badge, status_badge,
@@ -25,6 +30,8 @@ from app.components import (
 from app.styles import PAGE_HEADER, TABLE, INPUT, TEXTAREA, LINK, MUTED_SM, btn
 
 ar = APIRouter()
+
+_PERIODS = ["daily", "weekly", "monthly", "quarterly", "yearly"]
 
 
 def _normalise_cadence(frequency: str, interval: int, base_unit: str) -> tuple:
@@ -37,6 +44,13 @@ def _normalise_cadence(frequency: str, interval: int, base_unit: str) -> tuple:
         base_unit_val = None
         interval_val = 1
     return frequency, interval_val, base_unit_val
+
+
+def _detail_redirect(sub_id: int, msg: str = "", kind: str = "warning"):
+    url = f"/subscriptions/{sub_id}/detail"
+    if msg:
+        url += f"?msg={quote_plus(msg)}&msg_kind={kind}"
+    return RedirectResponse(url, status_code=303)
 
 
 # ── New subscription ─────────────────────────────────────────────────────────
@@ -55,7 +69,7 @@ def get(req, session):
     return page_title("New Subscription"), nav_bar(ctx, "manage"), Main(
         Div(H2("Add Subscription"), A("← Manage", href="/manage", cls=LINK), cls=PAGE_HEADER),
         subscription_form("/manage/new", btn_label="Create Subscription",
-                          categories=get_categories(db, ctx)),
+                          categories=get_categories(db, ctx), include_period=True),
     )
 
 
@@ -63,7 +77,7 @@ def get(req, session):
 async def post(req, session, name: str, amount: float, start_date: str,
                end_date: str = "", frequency: str = "monthly",
                interval: int = 1, base_unit: str = "", notes: str = "",
-               is_active: str = "", category: str = ""):
+               category: str = ""):
     ctx = req.scope["ctx"]
     if (r := require(ctx, "subscriptions.create")): return r
     if not writable_team(ctx):
@@ -72,32 +86,27 @@ async def post(req, session, name: str, amount: float, start_date: str,
     db = get_db()
     now = timeutil.now_iso()
     frequency, interval_val, base_unit_val = _normalise_cadence(frequency, interval, base_unit)
-    is_active_val = 1 if is_active == "1" else 0
     category_val = category.strip() or None
 
     sub_id = db["subscriptions"].insert({
         "team_id": ctx.active_team_id, "created_by": ctx.user["id"],
-        "name": name, "amount": amount, "currency": "EUR",
-        "category": category_val, "start_date": start_date,
-        "end_date": end_date or None, "notes": notes,
+        "name": name, "currency": "EUR", "category": category_val, "notes": notes,
         "frequency": frequency, "interval": interval_val, "base_unit": base_unit_val,
-        "is_active": is_active_val, "created_at": now, "updated_at": now,
+        "created_at": now, "updated_at": now,
     }).last_pk
 
-    db["subscription_price_history"].insert({
-        "subscription_id": sub_id, "amount": amount, "valid_from": start_date,
-        "created_at": now, "created_by": ctx.user["id"],
-    })
+    add_period(db, sub_id, amount, start_date, end_date or None, ctx.user["id"])  # fresh sub: never auto-closes
 
     audit(ctx, "CREATE", "subscription", sub_id, name,
           f"Created '{name}' €{amount}/{frequency}",
           new_values={"name": name, "amount": amount, "category": category_val,
                       "frequency": frequency, "interval": interval_val,
-                      "base_unit": base_unit_val, "start_date": start_date})
+                      "base_unit": base_unit_val, "start_date": start_date,
+                      "end_date": end_date or None})
     return RedirectResponse("/manage", status_code=303)
 
 
-# ── Edit subscription ────────────────────────────────────────────────────────
+# ── Edit subscription (identity + cadence only) ──────────────────────────────
 
 @ar("/subscriptions/{sub_id}/edit")
 def get(req, session, sub_id: int):
@@ -111,8 +120,8 @@ def get(req, session, sub_id: int):
         Div(H2(f"Edit: {sub['name']}"),
             A("← Back", href=f"/subscriptions/{sub_id}/detail", cls=LINK),
             cls=PAGE_HEADER),
-        alert("Editing amount here updates the base record only. "
-              "Use 💰 Price Change to record a dated price change.", "warning"),
+        alert("This edits the subscription's name, billing frequency and details. "
+              "Prices and active dates are managed as periods on the detail page.", "info"),
         subscription_form(f"/subscriptions/{sub_id}/edit", sub=sub,
                           btn_label="Update Subscription",
                           categories=get_categories(db, ctx)),
@@ -120,10 +129,9 @@ def get(req, session, sub_id: int):
 
 
 @ar("/subscriptions/{sub_id}/edit")
-async def post(req, session, sub_id: int, name: str, amount: float, start_date: str,
-               end_date: str = "", frequency: str = "monthly",
+async def post(req, session, sub_id: int, name: str, frequency: str = "monthly",
                interval: int = 1, base_unit: str = "", notes: str = "",
-               is_active: str = "", category: str = ""):
+               category: str = ""):
     ctx = req.scope["ctx"]
     if (r := require(ctx, "subscriptions.edit")): return r
     db = get_db()
@@ -132,15 +140,11 @@ async def post(req, session, sub_id: int, name: str, amount: float, start_date: 
         return RedirectResponse("/manage", status_code=303)
 
     frequency, interval_val, base_unit_val = _normalise_cadence(frequency, interval, base_unit)
-    is_active_val = 1 if is_active == "1" else 0
     category_val = category.strip() or None
-    fields = ["name", "amount", "category", "start_date", "end_date",
-              "frequency", "interval", "base_unit", "notes", "is_active"]
+    fields = ["name", "category", "frequency", "interval", "base_unit", "notes"]
     old = {k: sub[k] for k in fields}
-    new_vals = {"name": name, "amount": amount, "category": category_val,
-                "start_date": start_date, "end_date": end_date or None,
-                "frequency": frequency, "interval": interval_val,
-                "base_unit": base_unit_val, "notes": notes, "is_active": is_active_val}
+    new_vals = {"name": name, "category": category_val, "frequency": frequency,
+                "interval": interval_val, "base_unit": base_unit_val, "notes": notes}
     changed = {k: v for k, v in new_vals.items() if str(v) != str(old.get(k, ""))}
 
     db["subscriptions"].update(sub_id, {**new_vals, "updated_at": timeutil.now_iso()})
@@ -149,10 +153,11 @@ async def post(req, session, sub_id: int, name: str, amount: float, start_date: 
     return RedirectResponse(f"/subscriptions/{sub_id}/detail", status_code=303)
 
 
-# ── Price change ─────────────────────────────────────────────────────────────
+# ── Add a period ─────────────────────────────────────────────────────────────
 
-@ar("/subscriptions/{sub_id}/price-change")
-def get(req, session, sub_id: int):
+@ar("/subscriptions/{sub_id}/periods/add")
+async def post(req, session, sub_id: int, amount: float, start_date: str,
+               end_date: str = ""):
     ctx = req.scope["ctx"]
     if (r := require(ctx, "subscriptions.edit")): return r
     db = get_db()
@@ -160,33 +165,60 @@ def get(req, session, sub_id: int):
     if not sub:
         return RedirectResponse("/manage", status_code=303)
 
-    current_price = get_active_price(db, sub_id, sub["amount"])
-    return page_title(f"Price Change – {sub['name']}"), nav_bar(ctx, "manage"), Main(
-        Div(H2(f"Price Change: {sub['name']}"),
+    err, note = add_period(db, sub_id, amount, start_date, end_date or None, ctx.user["id"])
+    if err:
+        return _detail_redirect(sub_id, err, "error")
+
+    db["subscriptions"].update(sub_id, {"updated_at": timeutil.now_iso()})
+    desc = (f"Added period for '{sub['name']}': {fmt_eur(amount)} from {start_date}"
+            f"{(' to ' + end_date) if end_date else ' (open-ended)'}")
+    if note:
+        desc += f" — {note}"
+    audit(ctx, "ADD_PERIOD", "subscription", sub_id, sub["name"], desc,
+          new_values={"amount": amount, "start_date": start_date, "end_date": end_date or None})
+    return _detail_redirect(sub_id, ("Period added. " + note).strip(), "success")
+
+
+# ── Edit a period ────────────────────────────────────────────────────────────
+
+@ar("/subscriptions/{sub_id}/periods/{period_id}/edit")
+def get(req, session, sub_id: int, period_id: int):
+    ctx = req.scope["ctx"]
+    if (r := require(ctx, "subscriptions.edit")): return r
+    db = get_db()
+    sub = get_subscription(db, ctx, sub_id)
+    if not sub:
+        return RedirectResponse("/manage", status_code=303)
+    period = next((p for p in get_periods(db, sub_id) if p["id"] == period_id), None)
+    if not period:
+        return _detail_redirect(sub_id)
+
+    return page_title(f"Edit Period – {sub['name']}"), nav_bar(ctx, "manage"), Main(
+        Div(H2(f"Edit Period: {sub['name']}"),
             A("← Back", href=f"/subscriptions/{sub_id}/detail", cls=LINK),
             cls=PAGE_HEADER),
-        P("Current active price: ", Strong(fmt_eur(current_price)), cls="text-sm text-muted-foreground"),
         Form(
-            Label("New Amount (€) *",
-                  Input(name="new_amount", type="number", step="0.01", min="0",
-                        required=True, placeholder="e.g. 12.99", cls=INPUT),
+            Label("Amount (€) *",
+                  Input(name="amount", type="number", step="0.01", min="0",
+                        value=period["amount"], required=True, cls=INPUT),
                   cls="grid gap-1.5 text-sm font-medium"),
-            Label("Valid From *",
-                  Input(name="valid_from", type="date", value=timeutil.today_iso(),
+            Label("Start Date *",
+                  Input(name="start_date", type="date", value=period["start_date"],
                         required=True, cls=INPUT),
                   cls="grid gap-1.5 text-sm font-medium"),
-            Label("Notes", Textarea("", name="notes", rows=2, cls=TEXTAREA,
-                  placeholder="Optional reason for price change…"),
+            Label("End Date",
+                  Input(name="end_date", type="date", value=period["end_date"] or "", cls=INPUT),
                   cls="grid gap-1.5 text-sm font-medium"),
-            Button("Save Price Change", type="submit", cls=btn()),
-            method="post", action=f"/subscriptions/{sub_id}/price-change",
+            Button("Save Period", type="submit", cls=btn()),
+            method="post", action=f"/subscriptions/{sub_id}/periods/{period_id}/edit",
             cls="grid gap-4 max-w-md",
         ),
     )
 
 
-@ar("/subscriptions/{sub_id}/price-change")
-async def post(req, session, sub_id: int, new_amount: float, valid_from: str, notes: str = ""):
+@ar("/subscriptions/{sub_id}/periods/{period_id}/edit")
+async def post(req, session, sub_id: int, period_id: int, amount: float,
+               start_date: str, end_date: str = ""):
     ctx = req.scope["ctx"]
     if (r := require(ctx, "subscriptions.edit")): return r
     db = get_db()
@@ -194,31 +226,22 @@ async def post(req, session, sub_id: int, new_amount: float, valid_from: str, no
     if not sub:
         return RedirectResponse("/manage", status_code=303)
 
-    old_amount = get_active_price(db, sub_id, sub["amount"])
-    now = timeutil.now_iso()
-    is_past = valid_from < timeutil.today_iso()
+    err = update_period(db, sub_id, period_id, amount, start_date, end_date or None)
+    if err:
+        return _detail_redirect(sub_id, err, "error")
 
-    db["subscription_price_history"].insert({
-        "subscription_id": sub_id, "amount": new_amount,
-        "valid_from": valid_from, "created_at": now, "created_by": ctx.user["id"],
-    })
-    db["subscriptions"].update(sub_id, {"amount": new_amount, "updated_at": now})
-
-    desc = f"Price change '{sub['name']}': {fmt_eur(old_amount)} → {fmt_eur(new_amount)}, effective {valid_from}"
-    if is_past:
-        desc += " (backdated)"
-    if notes:
-        desc += f". {notes}"
-    audit(ctx, "PRICE_CHANGE", "subscription", sub_id, sub["name"], desc,
-          old_values={"amount": old_amount},
-          new_values={"amount": new_amount, "valid_from": valid_from, "notes": notes})
-    return RedirectResponse(f"/subscriptions/{sub_id}/detail", status_code=303)
+    db["subscriptions"].update(sub_id, {"updated_at": timeutil.now_iso()})
+    audit(ctx, "EDIT_PERIOD", "subscription", sub_id, sub["name"],
+          f"Edited period for '{sub['name']}': {fmt_eur(amount)} from {start_date}"
+          f"{(' to ' + end_date) if end_date else ' (open-ended)'}",
+          new_values={"amount": amount, "start_date": start_date, "end_date": end_date or None})
+    return _detail_redirect(sub_id, "Period updated.", "success")
 
 
-# ── Delete a price-history entry ─────────────────────────────────────────────
+# ── Delete a period ──────────────────────────────────────────────────────────
 
-@ar("/subscriptions/{sub_id}/price-history/{entry_id}/delete")
-async def post(req, session, sub_id: int, entry_id: int):
+@ar("/subscriptions/{sub_id}/periods/{period_id}/delete")
+async def post(req, session, sub_id: int, period_id: int):
     ctx = req.scope["ctx"]
     if (r := require(ctx, "subscriptions.edit")): return r
     db = get_db()
@@ -226,28 +249,24 @@ async def post(req, session, sub_id: int, entry_id: int):
     if not sub:
         return RedirectResponse("/manage", status_code=303)
 
-    entries = list(db["subscription_price_history"].rows_where(
-        "id = ? AND subscription_id = ?", [entry_id, sub_id]))
-    if not entries:
-        return RedirectResponse(f"/subscriptions/{sub_id}/detail", status_code=303)
+    period = next((p for p in get_periods(db, sub_id) if p["id"] == period_id), None)
+    if not period:
+        return _detail_redirect(sub_id)
+    delete_period(db, period_id, sub_id)
 
-    entry = entries[0]
-    delete_price_history_entry(db, entry_id, sub_id)
-
-    new_active = get_active_price(db, sub_id, sub["amount"])
-    db["subscriptions"].update(sub_id, {"amount": new_active, "updated_at": timeutil.now_iso()})
-
-    audit(ctx, "DELETE", "subscription_price_history", entry_id, sub["name"],
-          f"Deleted price history entry for '{sub['name']}': "
-          f"{fmt_eur(entry['amount'])} (valid from {entry['valid_from']})",
-          old_values={"amount": entry["amount"], "valid_from": entry["valid_from"]})
-    return RedirectResponse(f"/subscriptions/{sub_id}/detail", status_code=303)
+    db["subscriptions"].update(sub_id, {"updated_at": timeutil.now_iso()})
+    audit(ctx, "DELETE_PERIOD", "subscription", sub_id, sub["name"],
+          f"Deleted period for '{sub['name']}': {fmt_eur(period['amount'])} "
+          f"from {period['start_date']}",
+          old_values={"amount": period["amount"], "start_date": period["start_date"],
+                      "end_date": period["end_date"]})
+    return _detail_redirect(sub_id, "Period deleted.", "success")
 
 
 # ── Subscription detail ──────────────────────────────────────────────────────
 
 @ar("/subscriptions/{sub_id}/detail")
-def get(req, session, sub_id: int):
+def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
     ctx = req.scope["ctx"]
     if (r := require(ctx, "subscriptions.view")): return r
     db = get_db()
@@ -256,8 +275,10 @@ def get(req, session, sub_id: int):
         return RedirectResponse("/manage", status_code=303)
 
     today = timeutil.today()
-    active_price = get_active_price(db, sub_id, sub["amount"])
-    history = get_price_history(db, sub_id)
+    today_iso = today.isoformat()
+    periods = get_periods(db, sub_id)
+    active = is_active_on(periods, today_iso)
+    price = current_price(periods)
     audit_entries = get_audit_for_entity(db, sub_id, "subscription")
     freq_lbl = frequency_label(sub["frequency"], sub["interval"] or 1, sub.get("base_unit"))
 
@@ -265,11 +286,8 @@ def get(req, session, sub_id: int):
     can_delete = ctx.can("subscriptions.delete")
     actions = []
     if can_edit:
-        actions += [
-            A("✏️ Edit", href=f"/subscriptions/{sub_id}/edit", role="button", cls=btn("outline")),
-            A("💰 Price Change", href=f"/subscriptions/{sub_id}/price-change",
-              role="button", cls=btn("outline")),
-        ]
+        actions.append(
+            A("✏️ Edit", href=f"/subscriptions/{sub_id}/edit", role="button", cls=btn("outline")))
     if can_delete:
         actions.append(Button("🗑️ Delete",
                        hx_post=f"/subscriptions/{sub_id}/delete",
@@ -282,11 +300,9 @@ def get(req, session, sub_id: int):
     info = section_card(
         H3(sub["name"]),
         Div(
-            kv("Amount", Strong(fmt_eur(active_price))),
+            kv("Current Price", Strong(fmt_eur(price)) if price is not None else "—"),
             kv("Frequency", freq_lbl),
-            kv("Start Date", sub["start_date"] or "—"),
-            kv("End Date", sub["end_date"] or "—"),
-            kv("Status", status_badge(sub["is_active"])),
+            kv("Status", status_badge(active)),
             kv("Category", badge(category_label(sub.get("category")), "info")),
             kv("Currency", sub["currency"] or "EUR"),
             cls="grid grid-cols-2 sm:grid-cols-3 gap-4 my-4",
@@ -297,65 +313,95 @@ def get(req, session, sub_id: int):
 
     costs = section_card(
         Table(
-            Thead(Tr(*[Th(p.capitalize())
-                       for p in ["daily", "weekly", "monthly", "quarterly", "yearly"]])),
+            Thead(Tr(*[Th(p.capitalize()) for p in _PERIODS])),
             Tbody(Tr(*[Td(fmt_eur(get_period_cost(
-                              active_price, sub["frequency"], sub["interval"] or 1,
+                              price or 0.0, sub["frequency"], sub["interval"] or 1,
                               sub.get("base_unit"), p)), cls="nowrap")
-                       for p in ["daily", "weekly", "monthly", "quarterly", "yearly"]])),
+                       for p in _PERIODS])),
             cls=TABLE,
         ),
-        heading="Cost Breakdown (active price)",
+        heading="Cost Breakdown (current price)",
+    ) if price is not None else ""
+
+    def period_status(p):
+        if p["start_date"] <= today_iso and (p["end_date"] is None or p["end_date"] >= today_iso):
+            return badge("Active", "active")
+        if p["start_date"] > today_iso:
+            return badge("Upcoming", "info")
+        return badge("Ended", "inactive")
+
+    period_rows = [
+        Tr(
+            Td(fmt_eur(p["amount"]), cls="nowrap"),
+            Td(p["start_date"], cls="nowrap"),
+            Td(p["end_date"] or "open-ended", cls="nowrap"),
+            Td(period_status(p), cls="nowrap"),
+            Td(
+                Div(
+                    A("✏️", href=f"/subscriptions/{sub_id}/periods/{p['id']}/edit",
+                      role="button", cls=btn("outline", "sm"), title="Edit period"),
+                    Button("🗑️", cls=btn("outline", "sm"), title="Delete period",
+                           hx_post=f"/subscriptions/{sub_id}/periods/{p['id']}/delete",
+                           hx_confirm=f"Delete period {fmt_eur(p['amount'])} from {p['start_date']}?",
+                           hx_target="body", hx_push_url="true"),
+                    cls="flex gap-1",
+                ) if can_edit else "", cls="nowrap"),
+        )
+        for p in periods
+    ]
+
+    add_period_form = (
+        section_card(
+            Form(
+                Div(
+                    Label("Amount (€) *",
+                          Input(name="amount", type="number", step="0.01", min="0",
+                                required=True, cls=INPUT),
+                          cls="grid gap-1.5 text-sm font-medium"),
+                    Label("Start Date *",
+                          Input(name="start_date", type="date", value=today_iso,
+                                required=True, cls=INPUT),
+                          cls="grid gap-1.5 text-sm font-medium"),
+                    Label("End Date",
+                          Input(name="end_date", type="date", cls=INPUT),
+                          cls="grid gap-1.5 text-sm font-medium"),
+                    Div(Button("Add Period", type="submit", cls=btn()),
+                        cls="flex items-end"),
+                    cls="grid gap-3 sm:grid-cols-4 items-start",
+                ),
+                method="post", action=f"/subscriptions/{sub_id}/periods/add",
+            ),
+            heading="Add Period",
+        ) if can_edit else ""
     )
 
-    price_rows = [
-        Tr(
-            Td(fmt_eur(h["amount"]), cls="nowrap"),
-            Td(h["valid_from"], cls="nowrap"),
-            Td(h.get("username") or "—"),
-            Td(h["created_at"][:16], cls="nowrap"),
-            Td(Form(
-                Button("🗑️ Delete", cls=btn("outline", "sm"),
-                       hx_post=f"/subscriptions/{sub_id}/price-history/{h['id']}/delete",
-                       hx_confirm=f"Delete price entry {fmt_eur(h['amount'])} from {h['valid_from']}?",
-                       hx_target="body", hx_push_url="true"),
-                method="post", cls="m-0",
-            ) if can_edit else "", cls="nowrap"),
-        )
-        for h in history
-    ]
-    price_hist = section_card(
-        heading="Price History",
+    periods_section = section_card(
+        heading="Periods",
         *([Table(
-            Thead(Tr(Th("Amount"), Th("Valid From"), Th("Added By"), Th("Added At"), Th(""))),
-            Tbody(*price_rows), cls=TABLE,
-        )] if price_rows else [P("No price history yet.", cls=MUTED_SM)]),
+            Thead(Tr(Th("Amount"), Th("Start"), Th("End"), Th("Status"),
+                     *([Th("")] if can_edit else []))),
+            Tbody(*period_rows), cls=TABLE,
+        )] if period_rows else [P("No periods yet. Add one below.", cls=MUTED_SM)]),
     )
 
     upcoming = []
-    if sub.get("start_date") and sub["is_active"]:
-        d = next_payment_date(sub["start_date"], sub["frequency"],
-                              sub["interval"] or 1, sub.get("base_unit"), today)
-        for _ in range(6):
-            price_on_day = get_active_price(db, sub_id, sub["amount"], d.isoformat())
-            days_from_now = (d - today).days
-            label = "today" if days_from_now == 0 else (
-                f"in {days_from_now} day{'s' if days_from_now != 1 else ''}"
-                if days_from_now > 0 else f"{-days_from_now}d ago"
-            )
-            upcoming.append(Div(
-                Span(d.isoformat()),
-                Span(Span(label, cls="text-muted-foreground text-sm mr-2"),
-                     Strong(fmt_eur(price_on_day))),
-                cls="flex justify-between items-center py-2 border-b last:border-0",
-            ))
-            d = next_payment_date(sub["start_date"], sub["frequency"],
-                                  sub["interval"] or 1, sub.get("base_unit"),
-                                  d + timedelta(days=1))
+    for pay in upcoming_payments_for_periods(sub, periods, count=6, reference=today):
+        days_from_now = (pay["date"] - today).days
+        label = "today" if days_from_now == 0 else (
+            f"in {days_from_now} day{'s' if days_from_now != 1 else ''}"
+            if days_from_now > 0 else f"{-days_from_now}d ago"
+        )
+        upcoming.append(Div(
+            Span(pay["date"].isoformat()),
+            Span(Span(label, cls="text-muted-foreground text-sm mr-2"),
+                 Strong(fmt_eur(pay["amount"]))),
+            cls="flex justify-between items-center py-2 border-b last:border-0",
+        ))
 
     next_payments = section_card(
         heading="Next Expected Payments",
-        *(upcoming if upcoming else [P("Subscription is inactive or has no start date.")]),
+        *(upcoming if upcoming else [P("No upcoming payments — subscription is not "
+                                       "currently active.")]),
     )
 
     audit_rows = [
@@ -374,7 +420,8 @@ def get(req, session, sub_id: int):
 
     return page_title(sub["name"]), nav_bar(ctx, "manage"), Main(
         Div(H2(sub["name"]), A("← Manage", href="/manage", cls=LINK), cls=PAGE_HEADER),
-        info, costs, price_hist, next_payments, audit_section,
+        alert(msg, msg_kind) if msg else "",
+        info, costs, periods_section, add_period_form, next_payments, audit_section,
     )
 
 

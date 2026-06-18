@@ -7,6 +7,7 @@ from fasthtml.common import *
 
 from app.db import (
     get_db, get_all_subscriptions, get_subscription, get_all_users,
+    get_periods, get_periods_map, current_price,
     restore_subscription, purge_subscription, audit,
 )
 from app.authz import require
@@ -26,6 +27,7 @@ def get(req, session, msg: str = "", msg_kind: str = "warning"):
     if (r := require(ctx, "records.view_deleted")): return r
     db = get_db()
     deleted = get_all_subscriptions(db, ctx, only_deleted=True)
+    periods_map = get_periods_map(db, [s["id"] for s in deleted])
     user_names = {u["id"]: u["username"] for u in get_all_users(db)}
     can_restore = ctx.can("records.restore")
     can_purge = ctx.can("subscriptions.delete.permanent")
@@ -48,7 +50,8 @@ def get(req, session, msg: str = "", msg_kind: str = "warning"):
         Tr(
             Td(s["name"], cls="font-medium"),
             Td(badge(category_label(s.get("category")), "info"), cls="nowrap"),
-            Td(fmt_eur(s["amount"]), cls="nowrap"),
+            Td((lambda pr: fmt_eur(pr) if pr is not None else "—")(
+                current_price(periods_map.get(s["id"], []))), cls="nowrap"),
             Td((s["deleted_at"] or "")[:16], cls="nowrap"),
             Td(user_names.get(s.get("deleted_by"), f"#{s.get('deleted_by')}"
                if s.get("deleted_by") else "—"), cls="nowrap"),
@@ -98,9 +101,11 @@ async def post(req, session, sub_id: int):
     if not sub:
         return RedirectResponse("/admin/deleted", status_code=303)
     # Snapshot into the audit log BEFORE the row is gone (audit has no FK to it).
+    price = current_price(get_periods(db, sub_id))
     audit(ctx, "PERMANENT_DELETE", "subscription", sub_id, sub["name"],
-          f"Permanently deleted '{sub['name']}' (€{sub['amount']}, {sub.get('category') or '—'})",
-          old_values={"name": sub["name"], "amount": sub["amount"],
+          f"Permanently deleted '{sub['name']}' "
+          f"({fmt_eur(price) if price is not None else '—'}, {sub.get('category') or '—'})",
+          old_values={"name": sub["name"], "amount": price,
                       "category": sub.get("category"), "frequency": sub.get("frequency")})
     purge_subscription(db, sub_id)
     return RedirectResponse("/admin/deleted?msg=Record+permanently+deleted&msg_kind=success",
