@@ -1,0 +1,75 @@
+# Build SubTracker's per-architecture add-on images and push them to GHCR.
+#
+# Home Assistant pulls `ghcr.io/78wesley/subtracker-{arch}:<version>`, so we build
+# one image per arch (amd64, aarch64) and tag it with the version read from
+# subtracker/config.yaml. Bump that version, push to master, and HA sees an update.
+#
+# One-time setup after the first successful run: open
+# https://github.com/users/78wesley/packages, and for BOTH `subtracker-amd64` and
+# `subtracker-aarch64` set "Package settings → Change visibility → Public" so the
+# Supervisor can pull without authentication.
+name: Build add-on images
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "app/**"
+      - "main.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Dockerfile"
+      - "docker-entrypoint.sh"
+      - "subtracker/config.yaml"
+      - ".github/workflows/build.yaml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read add-on version
+        id: ver
+        run: |
+          VERSION=$(grep -E '^version:' subtracker/config.yaml | head -1 \
+            | sed -E 's/^version:[[:space:]]*"?([^"]+)"?[[:space:]]*$/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.arch }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          tags: |
+            ghcr.io/78wesley/subtracker-${{ matrix.arch }}:${{ steps.ver.outputs.version }}
+            ghcr.io/78wesley/subtracker-${{ matrix.arch }}:latest
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}

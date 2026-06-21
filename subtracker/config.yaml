@@ -1,0 +1,32 @@
+# SubTracker — Home Assistant add-on (prebuilt image).
+#
+# The Supervisor PULLS the image below (it does not build on-device); `{arch}` is
+# substituted per host and `:<version>` is appended automatically. Images are
+# published to GHCR by .github/workflows/build.yaml — keep `version` in sync with
+# the tag that workflow pushes (it reads this same file, so just bump it here).
+name: SubTracker
+version: "0.1.0"
+slug: subtracker
+description: Multi-tenant subscription cost tracker (FastHTML + SQLite)
+url: https://github.com/78wesley/fasthtml-subtracker
+image: "ghcr.io/78wesley/subtracker-{arch}"
+arch:
+  - amd64
+  - aarch64
+init: false
+# Expose the web UI on the host. Change the host port (left) to avoid clashes.
+ports:
+  5001/tcp: 5001
+ports_description:
+  5001/tcp: SubTracker web interface
+# Shows an "Open Web UI" button on the add-on page.
+webui: "http://[HOST]:[PORT:5001]"
+# User options — the Supervisor writes them to /data/options.json, which the
+# image's entrypoint reads.
+options:
+  secret_key: ""
+  log_level: info
+schema:
+  # Leave blank to let the add-on generate & persist a key under /data/.secret.
+  secret_key: "str?"
+  log_level: "list(trace|debug|info|notice|warning|error|critical)?"

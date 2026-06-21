@@ -55,28 +55,40 @@ Data persists in the `subtracker-data` named volume. To surface it inside Home
 Assistant, add a **Webpage** dashboard card (or a Lovelace `iframe` card) pointing
 at `http://<host>:5001`.
 
-### Option B — Home Assistant add-on (exposed port)
+### Option B — Home Assistant add-on (add-on store, via repository URL)
 
-This repository doubles as a **local Home Assistant add-on**.
+This repo is also a **Home Assistant add-on repository**. The Supervisor *pulls a
+prebuilt image* (it does not build on-device), so images must be published to GHCR
+first via the included GitHub Actions workflow.
 
-1. On the HA host, copy this whole repository into `/addons/subtracker`
-   (use the *Samba share* or *Advanced SSH & Web Terminal* add-on). The folder
-   must contain `config.yaml`, `build.yaml`, `Dockerfile`, and the `app/` package.
-2. **Settings → Add-ons → Add-on Store → ⋮ → Check for updates**. SubTracker
-   appears under **Local add-ons**.
-3. **Install**, then on the **Configuration** tab optionally set:
-   - `secret_key` — leave blank to have the add-on generate and persist one under
-     `/data/.secret` (survives restarts);
-   - `log_level` — `info` by default.
+**One-time publishing setup (maintainer):**
+
+1. Push to `master` (or run the **Build add-on images** workflow manually). The
+   workflow in [`.github/workflows/build.yaml`](.github/workflows/build.yaml)
+   builds `amd64` + `aarch64` images and pushes them to
+   `ghcr.io/78wesley/subtracker-{arch}`, tagged with the `version` from
+   [`subtracker/config.yaml`](subtracker/config.yaml).
+2. Make the published packages **public**: open
+   `https://github.com/users/78wesley/packages`, and for both `subtracker-amd64`
+   and `subtracker-aarch64` set *Package settings → Change visibility → Public*.
+   (Otherwise the Supervisor can't pull them.)
+
+**Installing in Home Assistant (any user):**
+
+1. **Settings → Add-ons → Add-on Store → ⋮ → Repositories** → add
+   `https://github.com/78wesley/fasthtml-subtracker`.
+2. **SubTracker** appears in the store. Click **Install**.
+3. On the **Configuration** tab, optionally set `secret_key` (blank = auto-generated
+   and persisted to `/data/.secret`) and `log_level`.
 4. **Start**, then click **Open Web UI**.
 
-The Supervisor builds the image from the `Dockerfile` (per-arch base from
-`build.yaml`, currently `amd64` + `aarch64`). The SQLite database lives in the
-add-on's persistent `/data` directory and is included in HA snapshots/backups.
+To release an update: bump `version` in `subtracker/config.yaml`, commit, and push
+— CI publishes the new tag and HA offers the update. The SQLite database lives in
+the add-on's persistent `/data` directory and is included in HA snapshots/backups.
 
-> The `Dockerfile`/`docker-entrypoint.sh` are shared by both deployment options.
-> The entrypoint reads `/data/options.json` when run as an add-on and falls back
-> to `SUBTRACKER_*` environment variables otherwise.
+> The `Dockerfile`/`docker-entrypoint.sh` are shared by the image build and
+> docker-compose. The entrypoint reads `/data/options.json` when run as an add-on
+> and falls back to `SUBTRACKER_*` environment variables otherwise.
 
 ---
 
@@ -108,8 +120,9 @@ app/
   routes/            one APIRouter per feature area
   components/        FastHTML view helpers (shadcn-styled)
 tests/               pytest suite (cost math, RBAC, auth, migration, HTTP smoke)
-Dockerfile           unified production image (compose + HA add-on)
+Dockerfile           production image (used by compose + the GHCR image build)
 docker-compose.yml   standalone deployment
-config.yaml          Home Assistant add-on manifest
-build.yaml           per-arch base images for the HA builder
+repository.yaml      Home Assistant add-on repository manifest
+subtracker/          HA add-on (config.yaml → prebuilt GHCR image, DOCS.md)
+.github/workflows/   CI that builds & pushes per-arch images to GHCR
 ```

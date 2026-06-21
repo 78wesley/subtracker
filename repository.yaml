@@ -1,0 +1,6 @@
+# Home Assistant add-on repository manifest.
+# Add this repo's URL via: Settings → Add-ons → Add-on Store → ⋮ → Repositories.
+# The Supervisor then discovers every subfolder that contains a config.yaml.
+name: SubTracker Add-ons
+url: https://github.com/78wesley/fasthtml-subtracker
+maintainer: 78wesley (https://github.com/78wesley)

@@ -20,7 +20,9 @@ tests/
 Dockerfile
 .dockerignore
 docker-compose.yml
-addon/
+subtracker/
+repository.yaml
+.github/
 PROMPT.md
 REARCHITECTURE.md
 .env
