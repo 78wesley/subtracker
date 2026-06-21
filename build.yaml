@@ -1,0 +1,9 @@
+# Per-architecture base images injected as the Dockerfile's BUILD_FROM arg when the
+# Home Assistant Supervisor builds this add-on. The upstream python image is a
+# multi-arch manifest, so the same tag resolves to the correct arch at build time.
+build_from:
+  amd64: python:3.13-slim
+  aarch64: python:3.13-slim
+labels:
+  org.opencontainers.image.title: SubTracker
+  org.opencontainers.image.description: Multi-tenant subscription cost tracker

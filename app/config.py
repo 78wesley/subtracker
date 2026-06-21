@@ -10,7 +10,10 @@ from pathlib import Path
 # Repo root is the parent of the app/ package.
 ROOT = Path(__file__).resolve().parent.parent
 
-DB_PATH = ROOT / "subscriptions.db"
+# Database location. Override with SUBTRACKER_DB to point at a persistent volume
+# (e.g. /data/subscriptions.db in a container). Defaults to the repo root for dev.
+DB_PATH = Path(os.environ.get("SUBTRACKER_DB", ROOT / "subscriptions.db"))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Session-signing key. MUST be set in production via SUBTRACKER_SECRET — a known,
 # hardcoded key would let anyone forge a session cookie and impersonate any user.

@@ -1,0 +1,26 @@
+# VCS / tooling
+.git
+.gitignore
+.venv
+__pycache__
+**/__pycache__
+*.py[oc]
+
+# Local data — never ship the dev database or backups into the image
+subscriptions.db
+subscriptions.db.bak.*
+data/
+
+# Tests & docs not needed at runtime
+tests/
+*.md
+!README.md
+
+# Deployment artifacts
+Dockerfile
+.dockerignore
+docker-compose.yml
+addon/
+PROMPT.md
+REARCHITECTURE.md
+.env

@@ -5,7 +5,6 @@ theme toggle, titles, cards, 403 page.
 
 from fasthtml.common import *
 
-from app import timeutil
 from app.components.widgets import alert, dropdown_menu, menu_item_cls
 from app.styles import (
     NAV, NAV_LINK, NAV_LINK_ACTIVE, SECTION, PAGE_HEADER, btn, badge_cls,
@@ -79,7 +78,6 @@ def _nav_items(ctx) -> list:
         ("Teams", "/teams", "teams", ctx.can("teams.manage")),
         ("Deleted", "/admin/deleted", "deleted", ctx.can("records.view_deleted")),
         ("Users", "/users", "users", ctx.can("users.view")),
-        ("Debug", "/debug", "debug", ctx.can("settings.manage")),
     ]
     return [(lbl, href, key) for lbl, href, key, show in items if show]
 
@@ -118,8 +116,6 @@ def _mobile_menu(ctx, active: str, role_label: str):
 
 
 def nav_bar(ctx, active: str = "") -> Nav:
-    debug = timeutil.get_debug_date()
-    debug_pill = Span(f"🕐 {debug}", cls=badge_cls("warn")) if debug else ""
     role_label = ctx.global_role.replace("_", " ").title()
 
     desktop_links = Div(
@@ -139,7 +135,6 @@ def nav_bar(ctx, active: str = "") -> Nav:
     return Nav(
         A("💳 SubTracker", href="/dashboard", cls="font-bold text-base mr-1"),
         desktop_links,
-        debug_pill,
         Div(cls="flex-1"),
         desktop_right,
         Div(theme_toggle(), _mobile_menu(ctx, active, role_label),

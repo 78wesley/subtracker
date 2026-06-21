@@ -1,0 +1,31 @@
+# Home Assistant add-on manifest.
+#
+# Install as a LOCAL add-on: copy/clone this whole repository into the Home
+# Assistant `/addons/subtracker` folder (via the Samba or SSH add-on), then go to
+# Settings → Add-ons → Add-on Store → ⋮ → "Check for updates"; SubTracker shows up
+# under "Local add-ons". The Supervisor builds it from the Dockerfile in this repo.
+name: SubTracker
+version: "0.1.0"
+slug: subtracker
+description: Multi-tenant subscription cost tracker (FastHTML + SQLite)
+url: https://github.com/your-org/fasthtml-subtracker
+# python:3.13-slim is published for these arches; extend via build.yaml if needed.
+arch:
+  - amd64
+  - aarch64
+init: false
+# Expose the web UI on the host. Change the host port (left) to avoid clashes.
+ports:
+  5001/tcp: 5001
+ports_description:
+  5001/tcp: SubTracker web interface
+# Shows an "Open Web UI" button in the add-on page.
+webui: "http://[HOST]:[PORT:5001]"
+# User-configurable options (Supervisor writes them to /data/options.json).
+options:
+  secret_key: ""
+  log_level: info
+schema:
+  # Optional: leave blank to let the add-on generate & persist a key under /data.
+  secret_key: "str?"
+  log_level: "list(trace|debug|info|notice|warning|error|critical)?"

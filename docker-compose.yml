@@ -1,0 +1,34 @@
+# SubTracker — standalone deployment (run alongside Home Assistant, or anywhere).
+#
+#   1. Create a .env file next to this one:
+#        SUBTRACKER_SECRET=<output of: openssl rand -hex 32>
+#   2. docker compose up -d
+#   3. Open http://<host>:5001  → first visit walks you through admin setup.
+#
+# To surface it inside Home Assistant, add a "Webpage" dashboard card (or a
+# Lovelace iframe card) pointing at http://<host>:5001.
+
+services:
+  subtracker:
+    build: .
+    image: subtracker:latest
+    container_name: subtracker
+    restart: unless-stopped
+    ports:
+      - "${SUBTRACKER_PORT:-5001}:5001"
+    environment:
+      # REQUIRED in production: a stable secret so sessions survive restarts.
+      # Without it the app boots with a random per-process key and logs a warning.
+      SUBTRACKER_SECRET: ${SUBTRACKER_SECRET:?set SUBTRACKER_SECRET in .env (openssl rand -hex 32)}
+      SUBTRACKER_DB: /data/subscriptions.db
+    volumes:
+      - subtracker-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5001/login', timeout=5).status < 500 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  subtracker-data:
