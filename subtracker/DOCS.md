@@ -16,10 +16,13 @@ The first visit walks you through creating the initial admin account.
 
 ## Options
 
-| Option       | Default | Description                                                                 |
-| ------------ | ------- | --------------------------------------------------------------------------- |
-| `secret_key` | _blank_ | Session-signing key. Leave blank and the add-on generates one and persists it to `/data/.secret` so logins survive restarts. Set your own with `openssl rand -hex 32` if you prefer. |
-| `log_level`  | `info`  | uvicorn log level (`trace`…`critical`).                                     |
+| Option       | Default | Description                             |
+| ------------ | ------- | --------------------------------------- |
+| `log_level`  | `info`  | uvicorn log level (`trace`…`critical`). |
+
+The session-signing key is handled automatically: the add-on generates one on
+first start and persists it to `/data/.secret`, so logins survive restarts. It is
+not a user option.
 
 ## Data & backups
 

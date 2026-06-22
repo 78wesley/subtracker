@@ -106,8 +106,8 @@ pull them. The packages are `subtracker-amd64` / `subtracker-aarch64` (stable) a
    `https://github.com/78wesley/subtracker`.
 2. **SubTracker** (and **SubTracker (Nightly)**) appear in the store. Click **Install**
    on the one you want.
-3. On the **Configuration** tab, optionally set `secret_key` (blank = auto-generated
-   and persisted to `/data/.secret`) and `log_level`.
+3. On the **Configuration** tab, optionally set `log_level`. (The session key is
+   auto-generated and persisted to `/data/.secret` — it is not a user option.)
 4. **Start**, then click **Open Web UI**.
 
 The SQLite database lives in the add-on's persistent `/data` directory and is

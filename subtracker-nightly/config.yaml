@@ -22,10 +22,9 @@ ports:
 ports_description:
   5001/tcp: SubTracker Nightly web interface
 webui: "http://[HOST]:[PORT:5001]"
+# The session secret is intentionally NOT an option: the entrypoint
+# auto-generates and persists one under /data/.secret.
 options:
-  secret_key: ""
   log_level: info
 schema:
-  # Leave blank to let the add-on generate & persist a key under /data/.secret.
-  secret_key: "str?"
   log_level: "list(trace|debug|info|notice|warning|error|critical)?"
