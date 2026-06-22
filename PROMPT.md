@@ -1,307 +1,313 @@
-# AI Prompt: Build a Subscription Viewer & Manager Tool with Python-FastHTML
+# AI Prompt: Build a Multi-Tenant Subscription Cost Tracker with Python-FastHTML
 
 ## Overview
-Build a full-stack subscription management web application using **Python FastHTML**. This is a production-quality tool for managing recurring subscriptions with multi-user support, audit logging, and cost analytics.
+Build a full-stack subscription management web application using **Python FastHTML**.
+It is a production-quality tool for tracking recurring spend, with multi-tenant teams,
+role-based access control, period-aware price history, an audit log, and cost analytics.
+
+> This document is the living spec for the project. It started as the original build
+> prompt and has been kept in sync as the app evolved. The iterative feedback that
+> drove the changes is preserved at the end under **Change history**.
 
 ---
 
 ## Tech Stack
-- **Framework**: Python FastHTML (`python-fasthtml`)
-- **Database**: SQLite via `sqlite-utils` or `peewee` ORM (keep it simple, file-based)
-- **Auth**: Session-based login using FastHTML's built-in session handling
-- **Styling**: PicoCSS (ships with FastHTML) — clean and functional
-- **No JavaScript frameworks** — use HTMX (built into FastHTML) for dynamic interactions
+- **Framework**: Python FastHTML (`python-fasthtml`) — server-rendered, HTMX for dynamic bits.
+- **Database**: SQLite via `sqlite-utils` (file-based, WAL mode, created on first boot).
+- **Auth**: Session-based login on FastHTML's signed-cookie sessions; passwords hashed with **bcrypt**.
+- **Styling**: Tailwind (Play CDN) configured with **shadcn** design tokens; dark mode via a `class` on `<html>`. (No PicoCSS, no JS build step, no SPA framework.)
+- **Packaging**: `uv` for dependency management; runs as `python main.py` or `uvicorn app.main:app`.
+
+---
+
+## Architecture
+
+The app is a single FastHTML instance assembled in `app/main.py`, with one `APIRouter`
+per feature area registered onto it. A `Beforeware` (`app/session.py`) runs on every
+non-public request: it loads the logged-in user, resolves the active team and effective
+permissions, and stashes a request **context** (`Ctx`) in the request scope. Routes pull
+`ctx` from the scope and guard themselves with `require(ctx, "<permission>")`.
+
+### Multi-tenancy & RBAC
+- **Subscriptions are owned by a team**, not a user. Users belong to one or more teams
+  and switch between them; the chosen team scopes everything they see and do.
+- Two role axes that **compose by union**:
+  - **Global role** (`users.global_role`): `super_admin` (runs everything across all
+    teams) or the implicit baseline `user`.
+  - **Team role** (`team_members.team_role`): `team_admin` (full management of their
+    team) or `viewer` (read-only).
+- A `super_admin` can enter a cross-team **"view all"** mode that aggregates every team.
+- The **role → permission matrix is stored in the database** (`roles`, `permissions`,
+  `role_permissions`) and seeded idempotently on boot, so it is editable without code
+  changes. Permission *strings* are fixed in code because enforcement references them.
 
 ---
 
 ## Database Schema
 
+All tables are created idempotently on boot (create-if-absent + add-column-if-absent),
+so `init_db()` is safe to call every start. Soft-deletable rows carry
+`deleted_at` / `deleted_by` and use partial unique indexes scoped to live (non-deleted) rows.
+
 ### Table: `users`
 | Column | Type | Notes |
 |---|---|---|
-| id | INTEGER PK | Auto-increment |
-| username | TEXT | Unique |
-| password_hash | TEXT | bcrypt hashed |
+| id | INTEGER PK | |
+| username | TEXT | Unique among live users |
+| password_hash | TEXT | bcrypt |
+| global_role | TEXT | `super_admin` or `user` |
 | created_at | DATETIME | |
+| deleted_at / deleted_by | DATETIME / INTEGER | Soft-delete |
+
+### Table: `teams`
+| Column | Type | Notes |
+|---|---|---|
+| id | INTEGER PK | |
+| name / slug | TEXT | Slug unique among live teams |
+| description | TEXT | |
+| created_at / created_by | | |
+| deleted_at / deleted_by | | Soft-delete |
+
+### Table: `team_members`
+| Column | Type | Notes |
+|---|---|---|
+| id | INTEGER PK | |
+| team_id | INTEGER FK → teams.id | |
+| user_id | INTEGER FK → users.id | |
+| team_role | TEXT | `team_admin` / `viewer` |
+| created_at / created_by, deleted_at / deleted_by | | One live membership per (team, user) |
+
+### Tables: `roles`, `permissions`, `role_permissions`
+The DB-driven RBAC matrix. `roles(name, scope, label, is_system, rank)`,
+`permissions(name, label, category)`, and the join `role_permissions(role_name, permission_name)`.
 
 ### Table: `subscriptions`
+Cadence & identity metadata only — the price and active dates live in `subscription_periods`.
 | Column | Type | Notes |
 |---|---|---|
-| id | INTEGER PK | Auto-increment |
-| user_id | INTEGER FK | references users.id |
-| name | TEXT | Subscription name (e.g. "Netflix") |
-| amount | DECIMAL | Current active amount |
-| currency | TEXT | Default: "EUR" |
-| start_date | DATE | When subscription started |
-| end_date | DATE | Optional, nullable — when it ends/ended |
-| notes | TEXT | Free-text notes/remarks |
-| repeat_unit | TEXT | One of: daily, weekly, monthly, quarterly, halfyear, yearly |
-| repeat_skip | INTEGER | Default: 1 — e.g. 2 = bi-monthly if repeat_unit=monthly |
-| is_active | BOOLEAN | True/False |
-| created_at | DATETIME | |
-| updated_at | DATETIME | |
+| id | INTEGER PK | |
+| team_id | INTEGER FK → teams.id | Owning team |
+| created_by | INTEGER FK → users.id | |
+| name | TEXT | e.g. "Netflix" |
+| currency | TEXT | "EUR" (stored, not converted) |
+| category | TEXT | Optional grouping label |
+| notes | TEXT | Free text |
+| frequency | TEXT | `daily` / `weekly` / `monthly` / `quarterly` / `yearly` / `custom` |
+| interval | INTEGER | N (only meaningful for `custom`; presets imply 1) |
+| base_unit | TEXT | For `custom` only: `daily` / `weekly` / `monthly` / `yearly` |
+| created_at / updated_at | DATETIME | |
+| deleted_at / deleted_by | | Soft-delete |
 
-### Table: `subscription_price_history`
+### Table: `subscription_periods`
+A subscription has one or more **non-overlapping dated windows**, each with its own price.
+This replaces the original `start_date`/`end_date`/`amount`/`is_active` columns *and* the
+separate `subscription_price_history` table — a price change is just the start of a new period.
 | Column | Type | Notes |
 |---|---|---|
-| id | INTEGER PK | Auto-increment |
-| subscription_id | INTEGER FK | references subscriptions.id |
-| amount | DECIMAL | The new price |
-| valid_from | DATE | Date from which the new price is active |
-| created_at | DATETIME | When this record was added |
-| created_by | INTEGER FK | references users.id |
+| id | INTEGER PK | |
+| subscription_id | INTEGER FK → subscriptions.id | |
+| amount | DECIMAL | Price during this window |
+| start_date | DATE | Window start (inclusive) |
+| end_date | DATE | Window end (inclusive); NULL = open-ended/ongoing |
+| created_at / created_by | | |
+
+A subscription is **active on a date** when a period contains it; its **current price** is
+the amount of the period containing today. There is no `is_active` flag — activity is derived
+from the periods and the current date.
 
 ### Table: `audit_log`
+Intentionally **FK-free and denormalised** so entries outlive the records (and users/teams)
+they describe — they must survive permanent deletion.
 | Column | Type | Notes |
 |---|---|---|
-| id | INTEGER PK | Auto-increment |
-| user_id | INTEGER FK | references users.id |
-| action | TEXT | e.g. CREATE, UPDATE, DELETE, PRICE_CHANGE, LOGIN, LOGOUT |
-| entity_type | TEXT | e.g. subscription, user |
-| entity_id | INTEGER | ID of the affected record |
-| old_values | TEXT | JSON string of old state (nullable) |
-| new_values | TEXT | JSON string of new state (nullable) |
+| id | INTEGER PK | |
+| actor_user_id / actor_name / actor_global_role | | Who did it (copied, not joined) |
+| team_id / team_name | | Team context |
+| action | TEXT | CREATE / UPDATE / DELETE / PRICE_CHANGE / RESTORE / PURGE / LOGIN / LOGOUT … |
+| entity_type / entity_id / entity_name | | What was affected |
+| old_values / new_values | TEXT | JSON snapshots (changed fields only on UPDATE) |
 | description | TEXT | Human-readable summary |
-| timestamp | DATETIME | When this happened |
+| timestamp | DATETIME | |
 
 ---
 
-## Repeat / Frequency Logic
+## Repeat / Frequency & Cost Logic
 
-The `repeat_unit` + `repeat_skip` combination defines the billing frequency:
+A cadence is the triple `(frequency, interval, base_unit)`:
+- A **named preset** (`daily`/`weekly`/`monthly`/`quarterly`/`yearly`) always means "every 1 unit".
+- `custom` means "every `interval` `base_unit`s" — e.g. every 6 months, every 2 weeks.
 
-| repeat_unit | repeat_skip | Meaning |
-|---|---|---|
-| monthly | 1 | Every month |
-| monthly | 2 | Every 2 months (bi-monthly) |
-| monthly | 3 | Every quarter (alternative) |
-| weekly | 2 | Every 2 weeks (bi-weekly) |
-| yearly | 1 | Annual |
-| quarterly | 1 | Every 3 months |
-| halfyear | 1 | Every 6 months |
-| daily | 1 | Every day |
-
-**Cost normalization function** — implement this helper to convert any subscription into a daily cost, then multiply up:
+`resolve()` collapses the triple to an `(effective_unit, n)` pair the math uses. Cost
+normalisation goes through a daily cost and multiplies/divides up (see `app/cost_utils.py`):
 
 ```python
-def get_annual_cost(amount: float, repeat_unit: str, repeat_skip: int = 1) -> float:
-    """Returns the yearly cost of a subscription."""
-    days_per_unit = {
-        "daily": 1,
-        "weekly": 7,
-        "monthly": 30.4375,   # average days/month
-        "quarterly": 91.3125,
-        "halfyear": 182.625,
-        "yearly": 365.25,
-    }
-    days_between_payments = days_per_unit[repeat_unit] * repeat_skip
-    payments_per_year = 365.25 / days_between_payments
-    return round(amount * payments_per_year, 2)
+DAYS_PER_UNIT = {"daily": 1, "weekly": 7, "monthly": 30.4375,
+                 "quarterly": 91.3125, "yearly": 365.25}
 
-def get_period_cost(amount: float, repeat_unit: str, repeat_skip: int, period: str) -> float:
-    """period: 'daily', 'weekly', 'monthly', 'quarterly', 'yearly'"""
-    annual = get_annual_cost(amount, repeat_unit, repeat_skip)
-    divisors = {
-        "daily": 365.25,
-        "weekly": 52.18,
-        "monthly": 12,
-        "quarterly": 4,
-        "yearly": 1,
-    }
-    return round(annual / divisors[period], 2)
+def get_annual_cost(amount, frequency, interval=1, base_unit=None):
+    unit, n = resolve(frequency, interval, base_unit)
+    return round(amount * (365.25 / (DAYS_PER_UNIT[unit] * n)), 2)
 ```
 
-For a subscription with a **price history**, always use the record from `subscription_price_history` where `valid_from <= today` ordered by `valid_from DESC LIMIT 1` to get the current active price.
+**Period- and price-aware spend.** Because a subscription can have several periods at
+different prices, true spend over a window is the sum of each period's prorated daily cost
+across the days it overlaps the window:
+
+```python
+def range_cost(sub, periods, range_start, range_end):
+    total = 0.0
+    for p in periods:
+        # clip [p.start, p.end] to [range_start, range_end], prorate by overlapping days
+        ...
+    return round(total, 2)
+```
+
+`year_cost`, `monthly_costs_for_year`, and `upcoming_payments_for_periods` build on this.
+All "today"/"now" reads go through `app/timeutil.py` (never `date.today()` directly) so the
+clock is consistent and mockable in tests.
 
 ---
 
 ## Application Pages & Routes
 
-### 1. `/login` — Login Page
-- Username + password form
-- On success: redirect to `/dashboard`
-- On failure: show error message
-- Log `LOGIN` action in audit_log on success
+Public: `/setup` (first-run), `/login`, `/logout`. Everything else requires a session and
+the relevant permission.
 
-### 2. `/logout`
-- Clears session
-- Logs `LOGOUT` in audit_log
-- Redirects to `/login`
+### First-run setup — `/setup`
+When **no live users exist**, all traffic is funnelled here to create the initial
+**super-admin**. No admin is seeded by default.
 
-### 3. `/dashboard` — Main Overview (protected)
-**Top section: Cost Summary Cards**
-Show 5 cards side by side:
-- Total Daily cost
-- Total Weekly cost
-- Total Monthly cost
-- Total Quarterly cost
-- Total Yearly cost
+### Auth — `/login`, `/logout`
+Username + password; `LOGIN` / `LOGOUT` written to the audit log.
 
-Only include **active** subscriptions where `end_date IS NULL OR end_date >= today`.
-Use the active price from `subscription_price_history` (or `subscriptions.amount` if no history exists yet).
-All amounts displayed in EUR.
+### Dashboard — `/dashboard?year=YYYY`
+Two lenses over the active team (or all teams for a super-admin in view-all mode):
+- **Historical** — what the selected **calendar year** actually cost, prorating every
+  subscription over its active days and price changes. Headline total with a
+  **year-over-year** delta badge, plus per-period cost cards (daily/weekly/monthly/quarterly/yearly).
+- **Run-rate** — what is being paid *right now*: subscriptions active today at today's
+  price, annualised ("what's my ongoing commitment").
+- **Charts** — monthly-spend bar chart for the year, and breakdowns by subscription,
+  category, and billing frequency. Year navigation (← previous / next →).
 
-**Main section: Subscriptions Table**
-Columns: Name | Amount | Frequency | Start Date | End Date | Notes | Actions
-- Filter bar: search by name, filter by active/inactive/all
-- Each row has: Edit button, Delete button (with confirm), Price Change button
-- Clicking a row or a "detail" button shows the price history for that subscription
+### Manage — `/manage`
+The subscriptions table for the active team: name, frequency, current price, next payment,
+status. Search/filter, and per-row edit / delete / detail actions. Entry point to import/export.
 
-### 4. `/subscriptions/new` — Create Subscription (GET form + POST handler)
-Form fields:
-- Name (text, required)
-- Amount (number, decimal, required)
-- Currency (text, default EUR, readonly for now)
-- Start Date (date picker, required)
-- End Date (date picker, optional)
-- Repeat Unit (select: daily / weekly / monthly / quarterly / halfyear / yearly)
-- Repeat Skip (number, default 1, min 1)
-- Notes (textarea, optional)
-- Is Active (checkbox, default checked)
+### Create / Edit subscription — `/manage/new`, `/subscriptions/{id}/edit`
+Identity + cadence fields (name, category, frequency/interval/base_unit, notes). Creating a
+subscription also creates its first period. Editing identity does **not** alter periods.
 
-On POST:
-1. Insert into `subscriptions`
-2. Insert the initial amount into `subscription_price_history` with `valid_from = start_date`
-3. Write to `audit_log`: action=CREATE, entity_type=subscription
-4. Redirect to `/dashboard`
+### Price periods — `/subscriptions/{id}/periods/add`, `…/periods/{pid}/edit`, `…/periods/{pid}/delete`
+Add, edit, or delete a period. Adding a period auto-closes the previous open-ended period the
+day before the new one starts. A price change is modelled as a new period (audited as `PRICE_CHANGE`).
 
-### 5. `/subscriptions/{id}/edit` — Edit Subscription (GET form + POST handler)
-Same fields as create form, pre-filled.
-**Important**: Editing `amount` here does NOT update the price history — it updates only the base record. Show a note: "To change the price with a future effective date, use the Price Change button."
-On POST:
-1. Update `subscriptions` record
-2. Write to `audit_log`: action=UPDATE, include old_values and new_values as JSON
+### Subscription detail — `/subscriptions/{id}/detail`
+All fields, the full **price-period history**, an **upcoming payments** forecast, and a
+per-entity audit trail.
 
-### 6. `/subscriptions/{id}/price-change` — Add a Price Change (GET form + POST handler)
-Form fields:
-- New Amount (decimal, required)
-- Valid From (date, required — must be >= today, show warning if backdating)
-- Notes (optional, textarea)
+### Delete — `/subscriptions/{id}/delete`
+**Soft delete** (sets `deleted_at`/`deleted_by`); reversible. Audited as `DELETE`.
 
-On POST:
-1. Insert into `subscription_price_history`
-2. Update `subscriptions.amount` to the new amount (for convenience)
-3. Write to `audit_log`: action=PRICE_CHANGE, include old amount, new amount, valid_from
-4. Redirect to `/subscriptions/{id}/detail`
+### Deleted records (admin) — `/admin/deleted`, `…/restore`, `…/purge`
+View soft-deleted records, **restore** them, or **permanently purge** (hard delete) — gated by
+`records.*` / `subscriptions.delete.permanent` permissions and audited.
 
-### 7. `/subscriptions/{id}/detail` — Subscription Detail Page
-Shows:
-- All subscription fields
-- Full price history table: Amount | Valid From | Added By | Added At
-- Mini audit log for this subscription (filtered from audit_log by entity_id)
+### Teams — `/teams`, `/teams/new`, `/teams/switch`, `/teams/view-all`, `/teams/{id}/members…`
+Create teams, switch the active team, toggle a super-admin's view-all mode, and add / remove
+members or change their team role.
 
-### 8. `/subscriptions/{id}/delete` — Delete (POST only, with HTMX confirm)
-- Soft delete preferred: set `is_active = False` and `end_date = today` — OR hard delete, your choice, but document it
-- Write to `audit_log`: action=DELETE
-- Redirect to `/dashboard`
+### Users — `/users`, `/users/new`, `/users/{id}/role`, `/users/{id}/delete`
+User management for permitted roles: list, create, change global role, soft-delete. Audited.
 
-### 9. `/audit` — Audit Log Page (protected)
-- Full table of all audit_log entries for the current user
-- Columns: Timestamp | Action | Entity | Description | Old Values | New Values
-- Pagination (25 per page)
-- Filter by action type
+### Audit log — `/audit`
+The team's audit log, filterable by action, paginated, collapsed by default.
 
-### 10. `/users` — User Management (admin-only, optional stretch goal)
-- List all users
-- Create new user
-- Delete user
-- Each action logged to audit_log
+### Import / Export — `/export?fmt=csv|json`, `/import`
+Round-trip the active team's subscriptions **and their price periods**. Export needs
+`subscriptions.view`; import needs `subscriptions.create` and a specific writable team
+(not "all teams"). CSV is one row per period (rows sharing a `name` merge into one
+subscription); JSON nests `periods` under each subscription. Imports are size-capped (5 MB) and
+row-capped, tolerate a UTF-8 BOM, and neutralise CSV formula injection on both export and import.
 
 ---
 
 ## Business Rules & Edge Cases
 
-1. **Active price resolution**: Always query price history. If no price history exists, fall back to `subscriptions.amount`.
-2. **Cost dashboard**: Only include subscriptions where `is_active = True` AND (`end_date IS NULL OR end_date >= date.today()`).
-3. **Price change backdating**: Allow it but show a warning in the UI: "This date is in the past. The dashboard will reflect the new amount immediately."
-4. **Repeat Skip = 1 is always default**. Never allow 0 or negative.
-5. **Currency**: Hardcode EUR for now. Store it in the DB but don't build a converter.
-6. **Audit log old/new values**: Serialize as JSON strings. On UPDATE actions, only log fields that actually changed.
-7. **Multi-user isolation**: Users only see their own subscriptions. Audit log shows only the current user's actions. Admin users (optional) can see all.
-8. **Session security**: Protect all routes except `/login` with a session check. Redirect to `/login` if not authenticated.
+1. **Activity & price are derived, never stored as a flag** — a subscription is active on a
+   date iff a period covers it; the current price is the covering period's amount.
+2. **Non-overlapping periods** — adding a period auto-closes the prior open-ended one.
+3. **Historical dashboard** prorates each period across the days it overlaps the selected year,
+   so price changes mid-year are reflected proportionally.
+4. **Run-rate** counts only subscriptions active today, at today's price.
+5. **Cadence**: `interval ≥ 1` always; named presets force `interval = 1` and no `base_unit`.
+6. **Currency** is stored (EUR) but never converted.
+7. **Audit `old/new` values** are JSON; UPDATE logs only the fields that changed. The audit log
+   is FK-free so it survives permanent deletion.
+8. **Tenancy isolation**: users only see the teams they belong to; a super-admin may switch to
+   any team or view all at once.
+9. **Soft-delete first**: deletes are reversible; only permitted roles can purge permanently.
+10. **No default admin**: the first run creates the super-admin via `/setup`.
+11. **Central clock**: all date/time reads go through `app/timeutil.py` for consistency and test
+    mockability.
 
 ---
 
-## File Structure
+## Project Layout
 
 ```
-subscription_tool/
-├── main.py              # FastHTML app, all routes
-├── database.py          # DB init, table creation, helper functions
-├── models.py            # Data classes / ORM models
-├── auth.py              # Login, logout, session helpers, password hashing
-├── cost_utils.py        # get_annual_cost(), get_period_cost() helpers
-├── audit.py             # write_audit_log() helper function
-├── subscriptions.db     # SQLite database (auto-created)
-└── requirements.txt     # python-fasthtml, bcrypt, sqlite-utils (or peewee)
-```
-
----
-
-## Implementation Notes
-
-- Use `python-fasthtml`'s `fast_app()` to bootstrap the app
-- Use HTMX `hx-confirm` for delete confirmations (no custom JS needed)
-- Use HTMX `hx-get` / `hx-post` for inline form submissions where it makes sense
-- Keep all HTML rendering in Python using FastHTML's `Div`, `Table`, `Form`, `Input`, etc. components — no separate template files needed unless you prefer it
-- Use `@app.get` and `@app.post` decorators for all routes
-- Password hashing: use `bcrypt` library, hash on registration, verify on login
-- Date handling: use Python's `datetime.date` and store as ISO strings in SQLite (`YYYY-MM-DD`)
-- For the cost summary, compute everything in Python on each dashboard load (no caching needed at this scale)
-
----
-
-## Stretch Goals (implement if time allows)
-
-1. **Export to CSV**: Button on `/dashboard` to download all active subscriptions as CSV
-2. **Next payment date**: Calculate the next billing date based on `start_date`, `repeat_unit`, `repeat_skip`
-3. **Upcoming payments widget**: Show subscriptions due in the next 30 days on the dashboard
-4. **Dark mode toggle**: Store preference in session
-5. **User registration page**: Allow self-signup instead of only admin-created users
-
----
-
-## Example `requirements.txt`
-
-```
-python-fasthtml
-bcrypt
-sqlite-utils
+app/
+  main.py            ASGI app assembly + global styles/scripts (Tailwind/shadcn, theme, dropdowns)
+  config.py          env-driven configuration (SUBTRACKER_SECRET / _DB / _PORT)
+  session.py         auth gate (Beforeware) + request context
+  rbac.py / authz.py role catalog, permission resolution, per-route guard
+  auth.py            bcrypt hashing + authentication
+  cost_utils.py      cadence math, prorated/period-aware cost, next payments
+  timeutil.py        central date/time provider
+  styles.py          shadcn token CSS + Tailwind utility-class constants
+  db/                schema (idempotent + legacy→periods migration), data access per entity, seed
+  routes/            one APIRouter per feature area (auth, dashboard, manage, subscriptions,
+                     import_export, audit, users, teams, admin)
+  components/        FastHTML view helpers (shadcn-styled) + charts + formatting
+tests/               pytest suite (cost math, RBAC, auth, migration, HTTP smoke)
+main.py              top-level shim → app.main:app
 ```
 
 ---
 
 ## Deliverable
 
-A single working Python application that can be started with:
-```bash
-pip install -r requirements.txt
-python main.py
-```
+Starts with `uv run python main.py`, opens on `http://localhost:5001`, presents the first-run
+setup (or login), and is fully functional with the features above. See `README.md` for
+configuration and deployment (Docker Compose and Home Assistant add-on).
 
-It should open on `http://localhost:5001`, show a login screen, and be fully functional with the above features.
+---
 
+## Change history
 
+The project was built from an initial single-user spec and iterated via feedback. The notable
+shifts captured above:
 
-## FEEDACK #1
-Looks and works great! but The dashboard widgets shows not the total with the price changes if they are found.
+### From the original single-user prompt
+- One `users` table owned subscriptions directly; PicoCSS styling; a `subscriptions` table with
+  `start_date` / `end_date` / `amount` / `is_active`; a separate `subscription_price_history` table.
 
-The widgets needs to show the total of the whole year (also add year selection) including price change differences ect then separate it within Daily Weekly Monthly Quarterly.
+### Feedback #1 (drove the current shape)
+- Dashboard widgets must show the **whole-year total including price-change differences**, with a
+  **year selector**, then split into Daily / Weekly / Monthly / Quarterly.
+- Add the ability to **delete a price change** (now: delete a period).
+- **Fix CSV export.**
+- **Do not create an admin user by default**; add a **`/setup` page** to create the first admin
+  when no users exist.
+- On the detail page, add a **"Next expected" upcoming-payments list** below the price history;
+  **collapse the audit log by default**.
+- Refactor toward **less-repetitive code / shared helpers**.
+- Add a **global date/time function** (`app/timeutil.py`) used everywhere a clock is needed, so
+  the date can be overridden for debugging.
 
-There is also no option to delete a price change, this needs to be added incase you make a mistake.
-
-The export doesnt to csv doesn't work.
-
-don't create an admin user by default.
-
-If there are no users, there needs to be a setup page to create the admin user.
-
-At the subscriptions detail page there needs to be a Next expected list  below the Price History.
-also the audit log needs to be collapsed by default.
-
-Write the python code less repeatable use functions.
-
-There also needs to be a global time date function that is used at places that needs time date.
-So i can change the date and time for debug purpose.
-
-
+### Subsequent evolution
+- Reworked styling from PicoCSS to **Tailwind + shadcn tokens** with dark mode.
+- Replaced the `start_date`/`amount`/`is_active` columns and `subscription_price_history` table
+  with the unified **`subscription_periods`** model (a one-shot migration backfills legacy data).
+- Introduced **multi-tenant teams**, the **DB-driven RBAC** matrix, soft-delete + restore/purge,
+  **custom cadences**, **categories**, **JSON import/export**, and the **run-rate** dashboard lens.
