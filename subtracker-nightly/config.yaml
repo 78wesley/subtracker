@@ -5,7 +5,7 @@
 # NOT hand-edit it. Runs side by side with the stable "SubTracker" add-on (its own
 # slug, image, data, and host port), so you can test master without touching prod.
 name: SubTracker (Nightly)
-version: "2026.6.22.3"
+version: "2026.6.22.4"
 slug: subtracker_nightly
 description: Nightly build of SubTracker — tracks the latest commit (unstable)
 url: https://github.com/78wesley/subtracker
