@@ -4,7 +4,7 @@ widgets.py — Small reusable UI widgets, styled with shadcn utility classes.
 
 from fasthtml.common import *
 
-from app.styles import btn, badge_cls, ALERT
+from app.styles import ALERT, badge_cls, btn
 
 # shadcn DropdownMenu content + item recipes. Show/hide is the native <details>
 # behaviour; the open animation + chevron rotation live in GLOBALS (app/styles.py),

@@ -45,7 +45,7 @@ def _migrate_to_periods(db) -> None:
                 "subscription_id = ?", [sub["id"]]),
             key=lambda h: (h["valid_from"], h["id"]))
 
-        def price_at(d: str) -> float:
+        def price_at(d: str, base_amount=base_amount, history=history) -> float:
             active = base_amount
             for h in history:
                 if h["valid_from"] <= d:
@@ -57,7 +57,7 @@ def _migrate_to_periods(db) -> None:
                       if h["valid_from"] > start and (end is None or h["valid_from"] <= end)})
         seg_starts = [start] + bps
 
-        periods = []
+        periods: list[dict] = []
         for i, ss in enumerate(seg_starts):
             se = (date.fromisoformat(seg_starts[i + 1]) - timedelta(days=1)).isoformat() \
                 if i + 1 < len(seg_starts) else end

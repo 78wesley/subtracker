@@ -5,8 +5,7 @@ teams.py — Team and team-membership queries (live rows only).
 import re
 
 from app import timeutil
-from app.db.connection import rows_as_dicts, one
-
+from app.db.connection import one, rows_as_dicts
 
 # ── Reads ────────────────────────────────────────────────────────────────────
 

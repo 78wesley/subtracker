@@ -1,6 +1,6 @@
 """Password hashing + authentication."""
 
-from app.auth import hash_password, verify_password, create_user, authenticate
+from app.auth import authenticate, create_user, hash_password, verify_password
 
 
 def test_hash_is_salted_and_verifies():

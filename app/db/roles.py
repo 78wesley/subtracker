@@ -2,7 +2,6 @@
 roles.py — Queries over the DB-driven roles / permissions / role_permissions tables.
 """
 
-from app.db.connection import rows_as_dicts
 
 
 def permissions_for_role(db, role_name: str) -> set:
@@ -10,7 +9,7 @@ def permissions_for_role(db, role_name: str) -> set:
             for r in db["role_permissions"].rows_where("role_name = ?", [role_name])}
 
 
-def list_roles(db, scope: str = None) -> list:
+def list_roles(db, scope: str | None = None) -> list:
     where = "scope = ?" if scope else None
     args = [scope] if scope else None
     return list(db["roles"].rows_where(where, args, order_by="rank DESC"))
@@ -22,7 +21,7 @@ def list_permissions(db) -> list:
 
 def role_matrix(db) -> dict:
     """{role_name: set(permission_name)} across every role."""
-    m = {}
+    m: dict[str, set] = {}
     for r in db["role_permissions"].rows:
         m.setdefault(r["role_name"], set()).add(r["permission_name"])
     return m

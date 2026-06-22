@@ -10,8 +10,8 @@ from fasthtml.common import *
 
 from app import timeutil
 from app.components.widgets import select_menu
-from app.cost_utils import FREQUENCIES, BASE_UNITS, frequency_label
-from app.styles import INPUT, TEXTAREA, LABEL, FIELD, btn
+from app.cost_utils import BASE_UNITS, FREQUENCIES, frequency_label
+from app.styles import FIELD, INPUT, LABEL, TEXTAREA, btn
 
 
 def _field(label, control):

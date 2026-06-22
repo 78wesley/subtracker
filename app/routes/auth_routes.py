@@ -2,17 +2,28 @@
 auth_routes.py — First-run setup, login, logout.
 """
 
+from urllib.parse import quote_plus
+
 from fasthtml.common import *
 
-from app.db import (
-    init_db, has_any_users, get_user_by_id, get_db,
-    create_team, add_member, write_audit_log,
-)
 from app.auth import authenticate, create_user
-from app.components import page_title, alert
-from app.styles import INPUT, CARD, FIELD, btn
+from app.components import alert, page_title
+from app.csrf import csrf_meta
+from app.db import (
+    add_member,
+    create_team,
+    get_db,
+    get_user_by_id,
+    has_any_users,
+    init_db,
+    write_audit_log,
+)
+from app.ratelimit import client_key, login_limiter
+from app.styles import CARD, FIELD, INPUT, btn
 
 ar = APIRouter()
+
+_RATE_LIMIT_MSG = "Too many attempts. Wait a few minutes and try again."
 
 
 # ── First-run setup (create initial admin) ───────────────────────────────────
@@ -22,7 +33,7 @@ def get(session, error: str = ""):
     db = init_db()
     if has_any_users(db):
         return RedirectResponse("/login", status_code=303)
-    return page_title("Setup"), Titled("Welcome to SubTracker",
+    return page_title("Setup"), csrf_meta(session), Titled("Welcome to SubTracker",
         Div(
             H2("Create your admin account", cls="mb-1"),
             alert(error, "error") if error else "",
@@ -44,10 +55,13 @@ def get(session, error: str = ""):
 
 
 @ar("/setup")
-async def post(session, username: str, password: str, password2: str):
+async def post(req, session, username: str, password: str, password2: str):
     db = init_db()
     if has_any_users(db):
         return RedirectResponse("/login", status_code=303)
+    if login_limiter.is_limited(client_key(req)):
+        return RedirectResponse(f"/setup?error={quote_plus(_RATE_LIMIT_MSG)}", status_code=303)
+    login_limiter.record(client_key(req))
     if not username.strip():
         return RedirectResponse("/setup?error=Username+cannot+be+empty", status_code=303)
     if password != password2:
@@ -79,7 +93,7 @@ def get(session, error: str = ""):
     db = init_db()
     if not has_any_users(db):
         return RedirectResponse("/setup", status_code=303)
-    return page_title("Login"), Titled("SubTracker",
+    return page_title("Login"), csrf_meta(session), Titled("SubTracker",
         Div(
             H2("Sign In", cls="mb-3"),
             alert(error, "error") if error else "",
@@ -97,7 +111,10 @@ def get(session, error: str = ""):
 
 
 @ar("/login")
-async def post(session, username: str, password: str):
+async def post(req, session, username: str, password: str):
+    if login_limiter.is_limited(client_key(req)):
+        return RedirectResponse(f"/login?error={quote_plus(_RATE_LIMIT_MSG)}", status_code=303)
+    login_limiter.record(client_key(req))
     user = authenticate(username, password)
     if not user:
         return RedirectResponse("/login?error=Invalid+username+or+password", status_code=303)

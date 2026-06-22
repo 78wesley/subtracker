@@ -10,17 +10,30 @@ from urllib.parse import urlencode
 from fasthtml.common import *
 
 from app import timeutil
-from app.db import (
-    get_db, get_all_subscriptions, get_categories, get_periods_map,
-    current_price, is_active_on, upcoming_price_change,
-)
 from app.authz import require
-from app.cost_utils import frequency_label
 from app.components import (
-    page_title, nav_bar, badge, status_badge, action_menu,
-    select_menu, fmt_eur, category_label, pagination_bar,
+    action_menu,
+    badge,
+    category_label,
+    fmt_eur,
+    nav_bar,
+    page_title,
+    pagination_bar,
+    select_menu,
+    status_badge,
 )
-from app.styles import PAGE_HEADER, TABLE, CONTROL, btn
+from app.cost_utils import frequency_label
+from app.db import (
+    current_price,
+    get_all_subscriptions,
+    get_categories,
+    get_db,
+    get_periods_map,
+    is_active_on,
+    upcoming_price_change,
+)
+from app.permissions import Perm
+from app.styles import CONTROL, PAGE_HEADER, TABLE, btn
 
 _FF = "grid gap-1.5 text-sm font-medium"  # filter field (label + control)
 _PER_PAGE = 20  # subscriptions per page in the manage list
@@ -65,13 +78,13 @@ ar = APIRouter()
 @ar("/manage")
 def get(req, session, q: str = "", status: str = "all", category: str = "", page: int = 1):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.view")): return r
+    if (r := require(ctx, Perm.SUB_VIEW)): return r
     db = get_db()
 
-    can_create = ctx.can("subscriptions.create")
-    can_edit = ctx.can("subscriptions.edit")
-    can_delete = ctx.can("subscriptions.delete")
-    can_view_detail = ctx.can("subscriptions.view")
+    can_create = ctx.can(Perm.SUB_CREATE)
+    can_edit = ctx.can(Perm.SUB_EDIT)
+    can_delete = ctx.can(Perm.SUB_DELETE)
+    can_view_detail = ctx.can(Perm.SUB_VIEW)
     show_actions = can_edit or can_delete
 
     today = timeutil.today_iso()

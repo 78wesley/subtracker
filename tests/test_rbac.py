@@ -1,9 +1,13 @@
 """Role-based access control: effective-permission resolution + context building."""
 
 from app.auth import create_user
-from app.db import create_team, add_member, get_user_by_id
+from app.db import add_member, create_team, get_user_by_id
 from app.rbac import (
-    resolve_permissions, build_ctx, can_access_team, ALL_PERMISSIONS, ROLE_PERMISSIONS,
+    ALL_PERMISSIONS,
+    ROLE_PERMISSIONS,
+    build_ctx,
+    can_access_team,
+    resolve_permissions,
 )
 
 

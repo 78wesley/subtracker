@@ -8,7 +8,7 @@ resolved `Ctx` (user, active team, effective permissions) on `req.scope["ctx"]`.
 
 from starlette.responses import RedirectResponse
 
-from app.db import has_any_users, get_user_by_id, get_db
+from app.db import get_db, get_user_by_id, has_any_users
 from app.rbac import build_ctx
 
 # Paths the auth gate does NOT run on (public pages + top-level static assets).

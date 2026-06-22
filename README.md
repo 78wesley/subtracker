@@ -43,10 +43,12 @@ uv run python main.py        # http://localhost:5001  (live reload)
 
 First visit walks you through creating the initial **super-admin** account.
 
-Run the tests:
+Lint, type-check, and test (the same checks CI runs):
 
 ```bash
-uv run pytest
+uv run ruff check app tests     # lint + import sorting
+uv run mypy                     # type-check the logic/data layer
+uv run pytest --cov             # tests with coverage
 ```
 
 ---
@@ -60,6 +62,7 @@ All configuration is via environment variables:
 | `SUBTRACKER_SECRET`  | **Prod** | random per-process       | Session-signing key. **Set a stable value in production** — without it, logins do not survive a restart and a warning is logged. Generate with `openssl rand -hex 32`. |
 | `SUBTRACKER_DB`      | no       | `./subscriptions.db`     | SQLite file path. Point at a persistent volume in a container (e.g. `/data/subscriptions.db`). |
 | `SUBTRACKER_PORT`    | no       | `5001`                   | Listen port.                                                   |
+| `SUBTRACKER_SECURE_COOKIES` | no | `0`                     | Set to `1` when serving over HTTPS: marks the session cookie `Secure` and sets `SameSite=strict`. |
 
 The database runs in WAL mode and is created automatically on first boot.
 
@@ -141,12 +144,19 @@ test suite). Pushing to `master` never touches the stable image.
 - Sessions are signed cookies keyed by `SUBTRACKER_SECRET`.
 - Authorization is enforced per-route via the RBAC layer (`app/rbac.py`,
   `app/authz.py`); roles compose by union across a global and a per-team axis.
+- **CSRF protection** (`app/csrf.py`): a per-session token is required on every
+  state-changing request. It rides in a `<meta>` tag; client JS attaches it to
+  POST forms (hidden field) and HTMX requests (`X-CSRFToken` header), and a
+  Beforeware rejects any unsafe request whose token doesn't match the session.
+- **Login/setup rate-limiting** (`app/ratelimit.py`): 10 attempts per 5 minutes
+  per client throttles online password guessing.
 - CSV export quotes leading formula characters (`=`, `+`, `-`, `@`) to neutralise
   spreadsheet formula injection, and imports are size- and row-capped.
 
-**Recommended hardening before exposing to untrusted networks** (not yet
-implemented): CSRF tokens on state-changing forms, login rate-limiting, and
-serving behind HTTPS with `Secure` session cookies.
+**Before exposing to untrusted networks**, serve behind HTTPS and set
+`SUBTRACKER_SECURE_COOKIES=1` — this marks the session cookie `Secure` (sent only
+over HTTPS) and tightens `SameSite` to `strict`. The in-memory rate limiter is
+per-process; a multi-worker deployment would want a shared store.
 
 ---
 
@@ -158,6 +168,9 @@ app/
   config.py          env-driven configuration
   session.py         auth gate (Beforeware) + request context
   rbac.py / authz.py role catalog, permission resolution, per-route guard
+  permissions.py     permission name catalog (the Perm constants)
+  csrf.py            per-session CSRF token: guard, <meta>, client JS
+  ratelimit.py       in-memory auth rate limiter
   auth.py            bcrypt hashing + authentication
   cost_utils.py      cadence math, prorated/period-aware cost, next payments
   timeutil.py        central date/time provider
@@ -165,7 +178,8 @@ app/
   db/                schema (idempotent + migration), data access per entity
   routes/            one APIRouter per feature area
   components/        FastHTML view helpers (shadcn-styled) + charts
-tests/               pytest suite (cost math, RBAC, auth, migration, HTTP smoke)
+tests/               pytest suite (cost math, RBAC + HTTP enforcement, auth, CSRF,
+                     rate-limit, lifecycle, import/export, migration, HTTP smoke)
 Dockerfile           production image (used by compose + the GHCR image build)
 docker-compose.yml   standalone deployment
 repository.yaml      Home Assistant add-on repository manifest

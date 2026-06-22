@@ -15,28 +15,22 @@ constants below, so they are editable in the DB without code changes (spec §8).
 Permission STRINGS are fixed in code because enforcement references them.
 """
 
+from app.csrf import ensure_token
 from app.db.roles import permissions_for_role
 from app.db.teams import get_membership, get_team, list_all_teams, list_user_teams
 
+# Re-exported so existing `from app.rbac import Perm, PERMISSIONS, ALL_PERMISSIONS`
+# imports keep working; the catalog itself lives in the dependency-free module.
+from app.permissions import ALL_PERMISSIONS, PERMISSIONS, Perm
 
-# ── Permission catalog (name, label, category) ───────────────────────────────
-
-PERMISSIONS = [
-    ("subscriptions.view",            "View subscriptions",            "Subscriptions"),
-    ("subscriptions.create",          "Create subscriptions",          "Subscriptions"),
-    ("subscriptions.edit",            "Edit subscriptions",            "Subscriptions"),
-    ("subscriptions.delete",          "Delete (soft) subscriptions",   "Subscriptions"),
-    ("subscriptions.delete.permanent","Permanently delete records",    "Subscriptions"),
-    ("records.restore",               "Restore deleted records",       "Records"),
-    ("records.view_deleted",          "View deleted records",          "Records"),
-    ("teams.view",                    "View / switch teams",           "Teams"),
-    ("teams.manage",                  "Manage teams & members",        "Teams"),
-    ("users.view",                    "View users",                    "Users"),
-    ("users.manage",                  "Manage users & global roles",   "Users"),
-    ("audit.view",                    "View team audit log",           "Audit"),
-    ("settings.manage",               "Manage settings & role matrix", "Settings"),
+# `PERMISSIONS` is consumed by importers (e.g. app.db.seed), not by this module —
+# declaring it here marks the re-export as intentional.
+__all__ = [
+    "ALL_PERMISSIONS", "PERMISSIONS", "Perm", "ROLE_PERMISSIONS",
+    "GLOBAL_ROLES", "TEAM_ROLES", "GLOBAL_ROLE_NAMES", "TEAM_ROLE_NAMES",
+    "CANONICAL_ROLE_NAMES", "BASELINE_GLOBAL_ROLE", "Ctx", "build_ctx",
+    "resolve_permissions", "can_access_team", "global_role_rank",
 ]
-ALL_PERMISSIONS = [p[0] for p in PERMISSIONS]
 
 # ── Roles (name, label, rank) ────────────────────────────────────────────────
 # Exactly three assignable roles exist, with fixed (non-editable) permission sets:
@@ -65,14 +59,14 @@ def global_role_rank(role: str) -> int:
 
 # ── Fixed role → permission sets (source of truth for seeding) ───────────────
 
-_VIEWER = {"subscriptions.view", "teams.view"}
+_VIEWER = {Perm.SUB_VIEW, Perm.TEAMS_VIEW}
 
 ROLE_PERMISSIONS = {
     "super_admin": set(ALL_PERMISSIONS),
-    "team_admin":  _VIEWER | {"subscriptions.create", "subscriptions.edit",
-                              "subscriptions.delete", "subscriptions.delete.permanent",
-                              "records.restore", "records.view_deleted",
-                              "teams.manage", "audit.view"},
+    "team_admin":  _VIEWER | {Perm.SUB_CREATE, Perm.SUB_EDIT,
+                              Perm.SUB_DELETE, Perm.SUB_DELETE_PERMANENT,
+                              Perm.RECORDS_RESTORE, Perm.RECORDS_VIEW_DELETED,
+                              Perm.TEAMS_MANAGE, Perm.AUDIT_VIEW},
     "viewer":      _VIEWER,
 }
 
@@ -82,13 +76,15 @@ ROLE_PERMISSIONS = {
 class Ctx:
     """Per-request identity + authorization context, built by the Beforeware."""
 
-    def __init__(self, user, active_team_id, active_team_name, teams, perms, view_all):
+    def __init__(self, user, active_team_id, active_team_name, teams, perms, view_all,
+                 csrf_token=""):
         self.user = user                      # users row (dict)
         self.active_team_id = active_team_id  # int | None
         self.active_team_name = active_team_name
         self.teams = teams                    # [{id, name, (team_role)}] the user may switch among
         self.perms = perms                    # set[str]
         self.view_all = view_all              # super_admin cross-team mode
+        self.csrf_token = csrf_token          # per-session CSRF token (for <meta>)
 
     @property
     def username(self):
@@ -142,7 +138,8 @@ def build_ctx(db, user: dict, session: dict) -> Ctx:
     active_name = next((t["name"] for t in teams if t["id"] == active), None)
 
     perms = resolve_permissions(db, user, active, view_all)
-    return Ctx(user, active, active_name, teams, perms, view_all)
+    return Ctx(user, active, active_name, teams, perms, view_all,
+               csrf_token=ensure_token(session))
 
 
 def can_access_team(db, user: dict, team_id: int) -> bool:

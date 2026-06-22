@@ -4,12 +4,18 @@ audit_routes.py — Audit log viewer (paginated, filterable by action).
 
 from fasthtml.common import *
 
-from app.db import get_db, get_audit_log
 from app.authz import require
 from app.components import (
-    page_title, nav_bar, alert, badge, pagination_bar, json_pretty, select_menu,
+    badge,
+    json_pretty,
+    nav_bar,
+    page_title,
+    pagination_bar,
+    select_menu,
 )
-from app.styles import PAGE_HEADER, TABLE, MUTED, btn
+from app.db import get_audit_log, get_db
+from app.permissions import Perm
+from app.styles import MUTED, PAGE_HEADER, TABLE, btn
 
 ar = APIRouter()
 
@@ -17,7 +23,7 @@ ar = APIRouter()
 @ar("/audit")
 def get(req, session, action_filter: str = "", page: int = 1):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "audit.view")): return r
+    if (r := require(ctx, Perm.AUDIT_VIEW)): return r
     db = get_db()
 
     entries, total = get_audit_log(db, ctx,
@@ -26,7 +32,7 @@ def get(req, session, action_filter: str = "", page: int = 1):
     actions = ["LOGIN", "LOGOUT", "CREATE", "UPDATE", "DELETE", "PRICE_CHANGE",
                "RESTORE", "PERMANENT_DELETE", "ROLE_CHANGE", "TEAM_CREATE", "MEMBER_ADD"]
     scope_note = ("all teams" if (ctx.view_all and ctx.is_super) else
-                  (f"team: {ctx.active_team_name}" if ctx.can("audit.view") and ctx.active_team_name
+                  (f"team: {ctx.active_team_name}" if ctx.can(Perm.AUDIT_VIEW) and ctx.active_team_name
                    else "your actions"))
 
     filter_bar = Form(

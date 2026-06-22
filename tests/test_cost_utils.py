@@ -6,7 +6,6 @@ import pytest
 
 from app import cost_utils as cu
 
-
 # ── normalise_cadence ────────────────────────────────────────────────────────
 
 def test_named_preset_drops_interval_and_base_unit():

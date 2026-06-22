@@ -11,20 +11,41 @@ Two distinct lenses are surfaced:
 from fasthtml.common import *
 
 from app import timeutil
-from app.db import (
-    get_db, get_all_subscriptions, get_periods_map, is_active_on, current_price,
-)
 from app.authz import require
-from app.cost_utils import (
-    year_cost, monthly_costs_for_year, frequency_label, get_annual_cost,
-)
 from app.components import (
-    page_title, nav_bar, section_card, badge, fmt_eur, category_label,
-    bar_chart, hbar_breakdown, MONTH_LABELS,
+    MONTH_LABELS,
+    badge,
+    bar_chart,
+    category_label,
+    fmt_eur,
+    hbar_breakdown,
+    nav_bar,
+    page_title,
+    section_card,
 )
+from app.cost_utils import (
+    frequency_label,
+    get_annual_cost,
+    monthly_costs_for_year,
+    year_cost,
+)
+from app.db import (
+    current_price,
+    get_all_subscriptions,
+    get_db,
+    get_periods_map,
+    is_active_on,
+)
+from app.permissions import Perm
 from app.styles import (
-    PAGE_HEADER, COST_CARD, COST_CARDS, COST_LABEL, COST_AMOUNT,
-    CHARTS_GRID, LINK, btn,
+    CHARTS_GRID,
+    COST_AMOUNT,
+    COST_CARD,
+    COST_CARDS,
+    COST_LABEL,
+    LINK,
+    PAGE_HEADER,
+    btn,
 )
 
 ar = APIRouter()
@@ -123,7 +144,7 @@ def _yoy_badge(cur: float, prev: float, prev_year: int):
 @ar("/dashboard")
 def get(req, session, year: int = None):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.view")): return r
+    if (r := require(ctx, Perm.SUB_VIEW)): return r
     db = get_db()
 
     current_year = timeutil.today().year

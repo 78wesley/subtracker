@@ -7,8 +7,13 @@ the canonical set so the model stays exactly three roles.
 """
 
 from app.rbac import (
-    PERMISSIONS, GLOBAL_ROLES, TEAM_ROLES, ROLE_PERMISSIONS,
-    CANONICAL_ROLE_NAMES, GLOBAL_ROLE_NAMES, TEAM_ROLE_NAMES,
+    CANONICAL_ROLE_NAMES,
+    GLOBAL_ROLE_NAMES,
+    GLOBAL_ROLES,
+    PERMISSIONS,
+    ROLE_PERMISSIONS,
+    TEAM_ROLE_NAMES,
+    TEAM_ROLES,
 )
 
 

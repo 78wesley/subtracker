@@ -5,16 +5,29 @@ admin.py — Admin tooling:
 
 from fasthtml.common import *
 
-from app.db import (
-    get_db, get_all_subscriptions, get_subscription, get_all_users,
-    get_periods, get_periods_map, current_price,
-    restore_subscription, purge_subscription, audit,
-)
 from app.authz import require
 from app.components import (
-    page_title, nav_bar, alert, badge, fmt_eur, category_label,
+    alert,
+    badge,
+    category_label,
+    fmt_eur,
+    nav_bar,
+    page_title,
 )
-from app.styles import PAGE_HEADER, TABLE, MUTED, btn
+from app.db import (
+    audit,
+    current_price,
+    get_all_subscriptions,
+    get_all_users,
+    get_db,
+    get_periods,
+    get_periods_map,
+    get_subscription,
+    purge_subscription,
+    restore_subscription,
+)
+from app.permissions import Perm
+from app.styles import MUTED, PAGE_HEADER, TABLE, btn
 
 ar = APIRouter()
 
@@ -24,13 +37,13 @@ ar = APIRouter()
 @ar("/admin/deleted")
 def get(req, session, msg: str = "", msg_kind: str = "warning"):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "records.view_deleted")): return r
+    if (r := require(ctx, Perm.RECORDS_VIEW_DELETED)): return r
     db = get_db()
     deleted = get_all_subscriptions(db, ctx, only_deleted=True)
     periods_map = get_periods_map(db, [s["id"] for s in deleted])
     user_names = {u["id"]: u["username"] for u in get_all_users(db)}
-    can_restore = ctx.can("records.restore")
-    can_purge = ctx.can("subscriptions.delete.permanent")
+    can_restore = ctx.can(Perm.RECORDS_RESTORE)
+    can_purge = ctx.can(Perm.SUB_DELETE_PERMANENT)
 
     def actions(s):
         btns = []
@@ -80,7 +93,7 @@ def get(req, session, msg: str = "", msg_kind: str = "warning"):
 @ar("/admin/deleted/subscription/{sub_id}/restore")
 async def post(req, session, sub_id: int):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "records.restore")): return r
+    if (r := require(ctx, Perm.RECORDS_RESTORE)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id, include_deleted=True)
     if not sub or sub.get("deleted_at") is None:
@@ -95,7 +108,7 @@ async def post(req, session, sub_id: int):
 @ar("/admin/deleted/subscription/{sub_id}/purge")
 async def post(req, session, sub_id: int):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.delete.permanent")): return r
+    if (r := require(ctx, Perm.SUB_DELETE_PERMANENT)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id, include_deleted=True)
     if not sub:

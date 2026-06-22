@@ -8,16 +8,29 @@ Member management requires teams.manage AND authority over the specific team
 
 from fasthtml.common import *
 
-from app.db import (
-    get_db, list_all_teams, list_user_teams, get_team, get_membership,
-    get_membership_by_id, list_team_members, member_count, count_team_admins,
-    create_team, add_member, set_member_role, remove_member, get_all_users,
-    get_user_by_id, audit,
-)
 from app.authz import require
-from app.rbac import TEAM_ROLES, TEAM_ROLE_NAMES, can_access_team
-from app.components import page_title, nav_bar, section_card, alert, badge, select_menu
-from app.styles import PAGE_HEADER, TABLE, INPUT, LINK, MUTED, btn
+from app.components import alert, badge, nav_bar, page_title, section_card, select_menu
+from app.db import (
+    add_member,
+    audit,
+    count_team_admins,
+    create_team,
+    get_all_users,
+    get_db,
+    get_membership,
+    get_membership_by_id,
+    get_team,
+    get_user_by_id,
+    list_all_teams,
+    list_team_members,
+    list_user_teams,
+    member_count,
+    remove_member,
+    set_member_role,
+)
+from app.permissions import Perm
+from app.rbac import TEAM_ROLE_NAMES, TEAM_ROLES, can_access_team
+from app.styles import INPUT, LINK, MUTED, PAGE_HEADER, TABLE, btn
 
 ar = APIRouter()
 
@@ -43,9 +56,9 @@ def _team_role_select(name: str, current: str = "viewer", width: str = "w-[130px
 @ar("/teams")
 def get(req, session, msg: str = "", msg_kind: str = "warning"):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "teams.manage")): return r
+    if (r := require(ctx, Perm.TEAMS_MANAGE)): return r
     db = get_db()
-    can_create = ctx.can("teams.manage")
+    can_create = ctx.can(Perm.TEAMS_MANAGE)
 
     teams = list_all_teams(db) if ctx.is_global_admin else list_user_teams(db, ctx.user["id"])
     rows = []
@@ -103,7 +116,7 @@ def get(req, session, msg: str = "", msg_kind: str = "warning"):
 @ar("/teams/switch")
 async def post(req, session, team_id: str = ""):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "teams.view")): return r
+    if (r := require(ctx, Perm.TEAMS_VIEW)): return r
     db = get_db()
     if team_id == "__all__" and ctx.is_super:
         session["view_all"] = True
@@ -133,7 +146,7 @@ async def post(req, session):
 @ar("/teams/new")
 async def post(req, session, name: str, description: str = ""):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "teams.manage")): return r
+    if (r := require(ctx, Perm.TEAMS_MANAGE)): return r
     db = get_db()
     if not name.strip():
         return RedirectResponse("/teams?msg=Team+name+required", status_code=303)
@@ -153,7 +166,7 @@ async def post(req, session, name: str, description: str = ""):
 @ar("/teams/{team_id}/members")
 def get(req, session, team_id: int, msg: str = "", msg_kind: str = "warning"):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "teams.manage")): return r
+    if (r := require(ctx, Perm.TEAMS_MANAGE)): return r
     db = get_db()
     team = get_team(db, team_id)
     if not team or not can_manage_team(db, ctx, team_id):
@@ -218,7 +231,7 @@ def get(req, session, team_id: int, msg: str = "", msg_kind: str = "warning"):
 @ar("/teams/{team_id}/members/add")
 async def post(req, session, team_id: int, user_id: int, team_role: str = "viewer"):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "teams.manage")): return r
+    if (r := require(ctx, Perm.TEAMS_MANAGE)): return r
     db = get_db()
     team = get_team(db, team_id)
     if not team or not can_manage_team(db, ctx, team_id):
@@ -238,7 +251,7 @@ async def post(req, session, team_id: int, user_id: int, team_role: str = "viewe
 @ar("/teams/{team_id}/members/{membership_id}/role")
 async def post(req, session, team_id: int, membership_id: int, team_role: str):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "teams.manage")): return r
+    if (r := require(ctx, Perm.TEAMS_MANAGE)): return r
     db = get_db()
     team = get_team(db, team_id)
     if not team or not can_manage_team(db, ctx, team_id):
@@ -263,7 +276,7 @@ async def post(req, session, team_id: int, membership_id: int, team_role: str):
 @ar("/teams/{team_id}/members/{membership_id}/remove")
 async def post(req, session, team_id: int, membership_id: int):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "teams.manage")): return r
+    if (r := require(ctx, Perm.TEAMS_MANAGE)): return r
     db = get_db()
     team = get_team(db, team_id)
     if not team or not can_manage_team(db, ctx, team_id):

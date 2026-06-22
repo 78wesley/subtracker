@@ -13,21 +13,46 @@ from urllib.parse import quote_plus
 from fasthtml.common import *
 
 from app import timeutil
-from app.db import (
-    get_db, get_subscription, get_periods, current_price, is_active_on,
-    add_period, update_period, delete_period, validate_periods,
-    get_audit_for_entity, get_categories, audit,
-)
 from app.authz import require, writable_team
-from app.cost_utils import (
-    frequency_label, get_period_cost, normalise_cadence,
-    upcoming_payments_for_periods, monthly_costs_for_year, year_cost, range_cost,
-)
 from app.components import (
-    page_title, nav_bar, section_card, collapsible_card, alert, badge, status_badge,
-    fmt_eur, category_label, subscription_form, bar_chart, MONTH_LABELS,
+    MONTH_LABELS,
+    alert,
+    badge,
+    bar_chart,
+    category_label,
+    collapsible_card,
+    fmt_eur,
+    nav_bar,
+    page_title,
+    section_card,
+    status_badge,
+    subscription_form,
 )
-from app.styles import PAGE_HEADER, TABLE, TABLE_WRAP, INPUT, TEXTAREA, LINK, MUTED_SM, btn
+from app.cost_utils import (
+    frequency_label,
+    get_period_cost,
+    monthly_costs_for_year,
+    normalise_cadence,
+    range_cost,
+    upcoming_payments_for_periods,
+    year_cost,
+)
+from app.db import (
+    add_period,
+    audit,
+    current_price,
+    delete_period,
+    get_audit_for_entity,
+    get_categories,
+    get_db,
+    get_periods,
+    get_subscription,
+    is_active_on,
+    update_period,
+    validate_periods,
+)
+from app.permissions import Perm
+from app.styles import INPUT, LINK, MUTED_SM, PAGE_HEADER, TABLE, TABLE_WRAP, btn
 
 ar = APIRouter()
 
@@ -46,7 +71,7 @@ def _detail_redirect(sub_id: int, msg: str = "", kind: str = "warning"):
 @ar("/manage/new")
 def get(req, session):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.create")): return r
+    if (r := require(ctx, Perm.SUB_CREATE)): return r
     if not writable_team(ctx):
         return page_title("New Subscription"), nav_bar(ctx, "manage"), Main(
             Div(H2("Add Subscription"), A("← Manage", href="/manage", cls=LINK), cls=PAGE_HEADER),
@@ -67,7 +92,7 @@ async def post(req, session, name: str, amount: float, start_date: str,
                interval: int = 1, base_unit: str = "", notes: str = "",
                category: str = ""):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.create")): return r
+    if (r := require(ctx, Perm.SUB_CREATE)): return r
     if not writable_team(ctx):
         return RedirectResponse("/teams?msg=Switch+to+a+specific+team+first&msg_kind=warning",
                                 status_code=303)
@@ -116,7 +141,7 @@ async def post(req, session, name: str, amount: float, start_date: str,
 @ar("/subscriptions/{sub_id}/edit")
 def get(req, session, sub_id: int):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.edit")): return r
+    if (r := require(ctx, Perm.SUB_EDIT)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id)
     if not sub:
@@ -138,7 +163,7 @@ async def post(req, session, sub_id: int, name: str, frequency: str = "monthly",
                interval: int = 1, base_unit: str = "", notes: str = "",
                category: str = ""):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.edit")): return r
+    if (r := require(ctx, Perm.SUB_EDIT)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id)
     if not sub:
@@ -164,7 +189,7 @@ async def post(req, session, sub_id: int, name: str, frequency: str = "monthly",
 async def post(req, session, sub_id: int, amount: float, start_date: str,
                end_date: str = ""):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.edit")): return r
+    if (r := require(ctx, Perm.SUB_EDIT)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id)
     if not sub:
@@ -189,7 +214,7 @@ async def post(req, session, sub_id: int, amount: float, start_date: str,
 @ar("/subscriptions/{sub_id}/periods/{period_id}/edit")
 def get(req, session, sub_id: int, period_id: int):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.edit")): return r
+    if (r := require(ctx, Perm.SUB_EDIT)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id)
     if not sub:
@@ -225,7 +250,7 @@ def get(req, session, sub_id: int, period_id: int):
 async def post(req, session, sub_id: int, period_id: int, amount: float,
                start_date: str, end_date: str = ""):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.edit")): return r
+    if (r := require(ctx, Perm.SUB_EDIT)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id)
     if not sub:
@@ -248,7 +273,7 @@ async def post(req, session, sub_id: int, period_id: int, amount: float,
 @ar("/subscriptions/{sub_id}/periods/{period_id}/delete")
 async def post(req, session, sub_id: int, period_id: int):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.edit")): return r
+    if (r := require(ctx, Perm.SUB_EDIT)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id)
     if not sub:
@@ -273,7 +298,7 @@ async def post(req, session, sub_id: int, period_id: int):
 @ar("/subscriptions/{sub_id}/detail")
 def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.view")): return r
+    if (r := require(ctx, Perm.SUB_VIEW)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id)
     if not sub:
@@ -287,8 +312,8 @@ def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
     audit_entries = get_audit_for_entity(db, sub_id, "subscription")
     freq_lbl = frequency_label(sub["frequency"], sub["interval"] or 1, sub.get("base_unit"))
 
-    can_edit = ctx.can("subscriptions.edit")
-    can_delete = ctx.can("subscriptions.delete")
+    can_edit = ctx.can(Perm.SUB_EDIT)
+    can_delete = ctx.can(Perm.SUB_DELETE)
     actions = []
     if can_edit:
         actions.append(
@@ -445,7 +470,7 @@ def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
             Thead(Tr(Th("Time"), Th("Action"), Th("Description"))),
             Tbody(*audit_rows), cls=TABLE,
         ), cls=TABLE_WRAP) if audit_rows else P("No audit entries.", cls=MUTED_SM),
-    ) if ctx.can("audit.view") else ""
+    ) if ctx.can(Perm.AUDIT_VIEW) else ""
 
     return page_title(sub["name"]), nav_bar(ctx, "manage"), Main(
         Div(H2(sub["name"]), A("← Manage", href="/manage", cls=LINK), cls=PAGE_HEADER),
@@ -459,7 +484,7 @@ def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
 @ar("/subscriptions/{sub_id}/delete")
 async def post(req, session, sub_id: int):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.delete")): return r
+    if (r := require(ctx, Perm.SUB_DELETE)): return r
     db = get_db()
     sub = get_subscription(db, ctx, sub_id)
     if not sub:

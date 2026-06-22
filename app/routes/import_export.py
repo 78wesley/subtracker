@@ -20,13 +20,18 @@ import math
 from fasthtml.common import *
 
 from app import timeutil
-from app.db import (
-    get_db, get_all_subscriptions, get_periods_map, add_period, audit,
-)
 from app.authz import require, writable_team
+from app.components import alert, nav_bar, page_title, section_card
 from app.cost_utils import normalise_cadence
-from app.components import page_title, nav_bar, section_card, alert
-from app.styles import PAGE_HEADER, LINK, INPUT, MUTED_SM, btn
+from app.db import (
+    add_period,
+    audit,
+    get_all_subscriptions,
+    get_db,
+    get_periods_map,
+)
+from app.permissions import Perm
+from app.styles import LINK, MUTED_SM, PAGE_HEADER, btn
 
 ar = APIRouter()
 
@@ -109,7 +114,7 @@ def _to_json(subs, periods_map) -> str:
 @ar("/export")
 def get(req, session, fmt: str = "csv"):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.view")): return r
+    if (r := require(ctx, Perm.SUB_VIEW)): return r
     db = get_db()
     subs, periods_map = _collect(db, ctx)
     # Filename-safe local timestamp, e.g. 2026-06-18_143005 (no colons).
@@ -254,7 +259,7 @@ def _result_block(created: int, periods_added: int, errors: list):
 
 
 def _page(ctx, result=None):
-    can_import = ctx.can("subscriptions.create")
+    can_import = ctx.can(Perm.SUB_CREATE)
 
     export_card = section_card(
         P("Download every subscription for the current team, including all of its "
@@ -307,14 +312,14 @@ def _page(ctx, result=None):
 @ar("/import")
 def get(req, session):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.view")): return r
+    if (r := require(ctx, Perm.SUB_VIEW)): return r
     return _page(ctx)
 
 
 @ar("/import")
 async def post(req, session):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "subscriptions.create")): return r
+    if (r := require(ctx, Perm.SUB_CREATE)): return r
     if not writable_team(ctx):
         return _page(ctx, alert("Switch to a specific team (not “All teams”) before "
                                 "importing subscriptions.", "warning"))

@@ -8,14 +8,21 @@ demote the last super admin; cannot change your own global role.
 
 from fasthtml.common import *
 
-from app.db import (
-    get_db, get_all_users, get_user_by_id, username_taken,
-    count_super_admins, set_global_role, soft_delete_user, audit,
-)
 from app.authz import require
+from app.components import alert, badge, nav_bar, page_title, select_menu
+from app.db import (
+    audit,
+    count_super_admins,
+    get_all_users,
+    get_db,
+    get_user_by_id,
+    set_global_role,
+    soft_delete_user,
+    username_taken,
+)
+from app.permissions import Perm
 from app.rbac import GLOBAL_ROLE_NAMES, global_role_rank
-from app.components import page_title, nav_bar, alert, badge, select_menu
-from app.styles import PAGE_HEADER, TABLE, INPUT, MUTED, btn
+from app.styles import INPUT, MUTED, PAGE_HEADER, TABLE, btn
 
 ar = APIRouter()
 
@@ -32,9 +39,9 @@ def _role_select(name: str, current: str, width: str = "w-[140px]"):
 @ar("/users")
 def get(req, session, msg: str = "", msg_kind: str = "warning"):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "users.view")): return r
+    if (r := require(ctx, Perm.USERS_VIEW)): return r
     db = get_db()
-    can_manage = ctx.can("users.manage")
+    can_manage = ctx.can(Perm.USERS_MANAGE)
     all_users = get_all_users(db)
 
     def row(u):
@@ -98,7 +105,7 @@ def get(req, session, msg: str = "", msg_kind: str = "warning"):
 @ar("/users/new")
 async def post(req, session, username: str, password: str, global_role: str = "user"):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "users.manage")): return r
+    if (r := require(ctx, Perm.USERS_MANAGE)): return r
     db = get_db()
     uname = username.strip()
     role = global_role if global_role in GLOBAL_ROLE_NAMES else "user"
@@ -119,7 +126,7 @@ async def post(req, session, username: str, password: str, global_role: str = "u
 @ar("/users/{uid}/role")
 async def post(req, session, uid: int, global_role: str):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "users.manage")): return r
+    if (r := require(ctx, Perm.USERS_MANAGE)): return r
     db = get_db()
     if uid == ctx.user["id"]:
         return RedirectResponse("/users?msg=Cannot+change+your+own+role", status_code=303)
@@ -146,7 +153,7 @@ async def post(req, session, uid: int, global_role: str):
 @ar("/users/{uid}/delete")
 async def post(req, session, uid: int):
     ctx = req.scope["ctx"]
-    if (r := require(ctx, "users.manage")): return r
+    if (r := require(ctx, Perm.USERS_MANAGE)): return r
     db = get_db()
     if uid == ctx.user["id"]:
         return RedirectResponse("/users?msg=Cannot+delete+yourself", status_code=303)

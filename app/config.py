@@ -27,3 +27,19 @@ if not SECRET_KEY:
           "environment for production.", file=sys.stderr)
 
 PORT = int(os.environ.get("SUBTRACKER_PORT", "5001"))
+
+
+def _flag(name: str, default: bool = False) -> bool:
+    """Read a boolean environment flag (1/true/yes/on)."""
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+# Cookie hardening for production behind HTTPS. When SUBTRACKER_SECURE_COOKIES is
+# enabled the session cookie is marked Secure (browsers only send it over HTTPS)
+# and SameSite is tightened to 'strict'. Left off by default so plain-HTTP local
+# dev still works; turn it on for any internet-facing deployment.
+SECURE_COOKIES = _flag("SUBTRACKER_SECURE_COOKIES", False)
+SESSION_SAMESITE = "strict" if SECURE_COOKIES else "lax"

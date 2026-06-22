@@ -16,7 +16,6 @@ Named presets (daily/weekly/monthly/quarterly/yearly) always mean "every 1 unit"
 import calendar
 from datetime import date, timedelta
 
-
 # ── Frequency model ──────────────────────────────────────────────────────────
 
 FREQUENCIES = ["daily", "weekly", "monthly", "quarterly", "yearly", "custom"]
@@ -42,7 +41,7 @@ PERIOD_DIVISORS = {
 _UNIT_NOUN = {"daily": "day", "weekly": "week", "monthly": "month", "yearly": "year"}
 
 
-def resolve(frequency: str, interval: int = 1, base_unit: str = None) -> tuple:
+def resolve(frequency: str, interval: int = 1, base_unit: str | None = None) -> tuple:
     """Collapse (frequency, interval, base_unit) to an (effective_unit, n) pair."""
     if frequency == "custom":
         unit = base_unit if base_unit in BASE_UNITS else "monthly"
@@ -52,7 +51,7 @@ def resolve(frequency: str, interval: int = 1, base_unit: str = None) -> tuple:
     return frequency, 1
 
 
-def normalise_cadence(frequency: str, interval=1, base_unit: str = None) -> tuple:
+def normalise_cadence(frequency: str, interval=1, base_unit: str | None = None) -> tuple:
     """Clean a submitted/imported (frequency, interval, base_unit) triple for storage.
 
     A named preset always means "every 1 unit" with no base_unit. "custom" keeps a
@@ -74,19 +73,19 @@ def normalise_cadence(frequency: str, interval=1, base_unit: str = None) -> tupl
 # ── Cost normalisation ───────────────────────────────────────────────────────
 
 def get_annual_cost(amount: float, frequency: str, interval: int = 1,
-                    base_unit: str = None) -> float:
+                    base_unit: str | None = None) -> float:
     unit, n = resolve(frequency, interval, base_unit)
     days_between = DAYS_PER_UNIT[unit] * n
     return round(amount * (365.25 / days_between), 2)
 
 
 def get_period_cost(amount: float, frequency: str, interval: int,
-                    base_unit: str, period: str) -> float:
+                    base_unit: str | None, period: str) -> float:
     return round(get_annual_cost(amount, frequency, interval, base_unit)
                  / PERIOD_DIVISORS[period], 2)
 
 
-def frequency_label(frequency: str, interval: int = 1, base_unit: str = None) -> str:
+def frequency_label(frequency: str, interval: int = 1, base_unit: str | None = None) -> str:
     named = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly",
              "quarterly": "Quarterly", "yearly": "Yearly"}
     if frequency != "custom":
@@ -120,7 +119,7 @@ def _advance(d: date, unit: str, n: int) -> date:
 
 
 def next_payment_date(start_date_str: str, frequency: str, interval: int,
-                      base_unit: str = None, reference: date = None) -> date:
+                      base_unit: str | None = None, reference: date | None = None) -> date:
     """Return the next payment date >= reference (defaults to today)."""
     ref = reference or date.today()
     unit, n = resolve(frequency, interval, base_unit)
@@ -133,13 +132,13 @@ def next_payment_date(start_date_str: str, frequency: str, interval: int,
 
 
 def upcoming_payments_for_periods(sub: dict, periods: list, count: int = 6,
-                                  reference: date = None) -> list:
+                                  reference: date | None = None) -> list:
     """
     Return up to `count` upcoming [{date, amount}] payments at/after `reference`,
     walking each period's cadence (anchored at its start) and clamped to its end.
     """
     ref = reference or date.today()
-    out = []
+    out: list = []
     freq, interval, base_unit = sub["frequency"], sub.get("interval") or 1, sub.get("base_unit")
     for p in sorted(periods, key=lambda x: x["start_date"]):
         pe = date.fromisoformat(p["end_date"]) if p.get("end_date") else None

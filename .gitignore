@@ -14,3 +14,7 @@ subscriptions.db
 subscriptions.db.bak.*
 subscriptions.db-shm
 subscriptions.db-wal
+
+# Coverage artifacts
+.coverage
+htmlcov/

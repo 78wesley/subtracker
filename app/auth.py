@@ -24,7 +24,8 @@ def create_user(username: str, password: str, global_role: str = "user") -> int:
         "global_role": global_role,
         "created_at": timeutil.now_iso(),
     })
-    return result.last_pk
+    assert result.last_pk is not None
+    return int(result.last_pk)
 
 
 def authenticate(username: str, password: str):

@@ -12,11 +12,12 @@ styled with shadcn utility class strings (see app/styles.py constants).
 
 from fasthtml.common import *
 
-from app.config import SECRET_KEY
-from app.styles import GLOBALS
+from app.config import SECRET_KEY, SECURE_COOKIES, SESSION_SAMESITE
+from app.csrf import ASSET_SKIP, CSRF_JS, csrf_guard
 from app.db import init_db
 from app.routes import ALL_ROUTERS
-from app.session import load_ctx, SKIP
+from app.session import SKIP, load_ctx
+from app.styles import GLOBALS
 
 # Tailwind (Play CDN, v3) configured to consume shadcn's HSL tokens. Opacity
 # modifiers (bg-primary/90, hover:bg-muted/50, …) work because the tokens are HSL.
@@ -143,9 +144,13 @@ app, rt = fast_app(
         Script(src="https://cdn.tailwindcss.com"),
         Script(TAILWIND_CONFIG),
         Script(DROPDOWN_JS),
+        CSRF_JS,
         Style(GLOBALS, type="text/tailwindcss"),
     ),
-    before=Beforeware(load_ctx, skip=SKIP),
+    # CSRF runs first (and on /login, /setup too); the auth gate runs second.
+    before=(Beforeware(csrf_guard, skip=ASSET_SKIP), Beforeware(load_ctx, skip=SKIP)),
+    same_site=SESSION_SAMESITE,
+    sess_https_only=SECURE_COOKIES,
 )
 
 # Register all route modules onto the single app instance.

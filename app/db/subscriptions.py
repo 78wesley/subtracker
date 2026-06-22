@@ -16,6 +16,7 @@ from datetime import date, timedelta
 
 from app import timeutil
 from app.db.connection import rows_as_dicts
+from app.permissions import Perm
 
 
 def _team_clause(ctx) -> tuple:
@@ -36,17 +37,17 @@ _ACTIVE_EXISTS = (
 def get_subscription(db, ctx, sub_id: int, include_deleted: bool = False):
     tc, tp = _team_clause(ctx)
     where = f"id = ? AND {tc}"
-    if not (include_deleted and ctx.can("records.view_deleted")):
+    if not (include_deleted and ctx.can(Perm.RECORDS_VIEW_DELETED)):
         where += " AND deleted_at IS NULL"
     rows = list(db["subscriptions"].rows_where(where, [sub_id] + tp))
     return rows[0] if rows else None
 
 
-def get_all_subscriptions(db, ctx, filter_active: str = None, search: str = None,
-                          category: str = None, only_deleted: bool = False) -> list:
+def get_all_subscriptions(db, ctx, filter_active: str | None = None, search: str | None = None,
+                          category: str | None = None, only_deleted: bool = False) -> list:
     tc, tp = _team_clause(ctx)
     where, params = [tc], list(tp)
-    if only_deleted and ctx.can("records.view_deleted"):
+    if only_deleted and ctx.can(Perm.RECORDS_VIEW_DELETED):
         where.append("deleted_at IS NOT NULL")
     else:
         where.append("deleted_at IS NULL")
@@ -100,7 +101,7 @@ def get_periods(db, subscription_id: int) -> list:
 
 def get_periods_map(db, subscription_ids: list) -> dict:
     """{subscription_id: [periods]} for many subscriptions in one query (avoids N+1)."""
-    out = {sid: [] for sid in subscription_ids}
+    out: dict[int, list] = {sid: [] for sid in subscription_ids}
     if not subscription_ids:
         return out
     placeholders = ",".join("?" * len(subscription_ids))
@@ -113,14 +114,14 @@ def get_periods_map(db, subscription_ids: list) -> dict:
     return out
 
 
-def is_active_on(periods: list, reference_date: str = None) -> bool:
+def is_active_on(periods: list, reference_date: str | None = None) -> bool:
     """True if any period covers the reference date (defaults to today)."""
     ref = reference_date or timeutil.today_iso()
     return any(p["start_date"] <= ref and (p["end_date"] is None or p["end_date"] >= ref)
                for p in periods)
 
 
-def upcoming_price_change(periods: list, reference_date: str = None):
+def upcoming_price_change(periods: list, reference_date: str | None = None):
     """
     The next scheduled price change relative to the reference date (default today):
     the earliest future period whose amount differs from the current price.
@@ -137,7 +138,7 @@ def upcoming_price_change(periods: list, reference_date: str = None):
     return None
 
 
-def current_price(periods: list, reference_date: str = None):
+def current_price(periods: list, reference_date: str | None = None):
     """
     Price in effect at the reference date: the covering period's amount, else the
     most recent already-started period, else the earliest period. None if no periods.

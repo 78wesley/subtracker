@@ -4,7 +4,7 @@ charts.py — Inline SVG / CSS charts, styled with shadcn token utilities
 """
 
 from fasthtml.common import *
-from fasthtml.svg import Svg, Rect, Line, Text, Polyline, Polygon, Circle
+from fasthtml.svg import Circle, Line, Polygon, Polyline, Rect, Svg, Text
 
 # Shared SVG viewBox geometry for line_chart / bar_chart. The charts scale to their
 # container via `w-full` + viewBox; these are the internal coordinate units only.

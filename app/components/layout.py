@@ -6,8 +6,15 @@ theme toggle, titles, cards, 403 page.
 from fasthtml.common import *
 
 from app.components.widgets import alert, dropdown_menu, menu_item_cls
+from app.permissions import Perm
 from app.styles import (
-    NAV, NAV_LINK, NAV_LINK_ACTIVE, SECTION, PAGE_HEADER, btn, badge_cls,
+    NAV,
+    NAV_LINK,
+    NAV_LINK_ACTIVE,
+    PAGE_HEADER,
+    SECTION,
+    badge_cls,
+    btn,
 )
 
 
@@ -72,12 +79,12 @@ _MENU_ICON = NotStr(
 def _nav_items(ctx) -> list:
     """[(label, href, key)] for the sections the current role may reach."""
     items = [
-        ("Dashboard", "/dashboard", "dashboard", ctx.can("subscriptions.view")),
-        ("Manage", "/manage", "manage", ctx.can("subscriptions.view")),
-        ("Audit Log", "/audit", "audit", ctx.can("audit.view")),
-        ("Teams", "/teams", "teams", ctx.can("teams.manage")),
-        ("Deleted", "/admin/deleted", "deleted", ctx.can("records.view_deleted")),
-        ("Users", "/users", "users", ctx.can("users.view")),
+        ("Dashboard", "/dashboard", "dashboard", ctx.can(Perm.SUB_VIEW)),
+        ("Manage", "/manage", "manage", ctx.can(Perm.SUB_VIEW)),
+        ("Audit Log", "/audit", "audit", ctx.can(Perm.AUDIT_VIEW)),
+        ("Teams", "/teams", "teams", ctx.can(Perm.TEAMS_MANAGE)),
+        ("Deleted", "/admin/deleted", "deleted", ctx.can(Perm.RECORDS_VIEW_DELETED)),
+        ("Users", "/users", "users", ctx.can(Perm.USERS_VIEW)),
     ]
     return [(lbl, href, key) for lbl, href, key, show in items if show]
 
@@ -132,14 +139,17 @@ def nav_bar(ctx, active: str = "") -> Nav:
         cls="hidden md:flex items-center gap-3",
     )
 
-    return Nav(
-        A("💳 SubTracker", href="/dashboard", cls="font-bold text-base mr-1"),
-        desktop_links,
-        Div(cls="flex-1"),
-        desktop_right,
-        Div(theme_toggle(), _mobile_menu(ctx, active, role_label),
-            cls="flex md:hidden items-center gap-2"),
-        cls=NAV,
+    return (
+        Meta(name="csrf-token", content=ctx.csrf_token),
+        Nav(
+            A("💳 SubTracker", href="/dashboard", cls="font-bold text-base mr-1"),
+            desktop_links,
+            Div(cls="flex-1"),
+            desktop_right,
+            Div(theme_toggle(), _mobile_menu(ctx, active, role_label),
+                cls="flex md:hidden items-center gap-2"),
+            cls=NAV,
+        ),
     )
 
 
