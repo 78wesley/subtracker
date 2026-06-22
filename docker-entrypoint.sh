@@ -3,7 +3,7 @@
 # Unified entrypoint. Resolves the session secret + log level, then execs uvicorn.
 #
 #   • Home Assistant add-on: the Supervisor writes user options to /data/options.json.
-#     We read `secret_key` / `log_level` from there.
+#     We read `log_level` from there (the session secret is always auto-generated below).
 #   • docker / compose: configuration comes from SUBTRACKER_* / LOG_LEVEL env vars.
 #
 # If no secret is provided either way, we generate one once and persist it to
@@ -13,11 +13,10 @@ set -euo pipefail
 OPTIONS_FILE="/data/options.json"
 LOG_LEVEL="${LOG_LEVEL:-info}"
 
-# Pull options from the HA add-on config when present (jq isn't installed; use python).
+# Pull the log level from the HA add-on config when present (jq isn't installed;
+# use python). The session secret is not an add-on option — see below.
 if [ -f "$OPTIONS_FILE" ]; then
-  opt_secret="$(python -c "import json;print(json.load(open('$OPTIONS_FILE')).get('secret_key') or '')" 2>/dev/null || true)"
   opt_log="$(python -c "import json;print(json.load(open('$OPTIONS_FILE')).get('log_level') or '')" 2>/dev/null || true)"
-  [ -n "$opt_secret" ] && export SUBTRACKER_SECRET="$opt_secret"
   [ -n "$opt_log" ] && LOG_LEVEL="$opt_log"
 fi
 
