@@ -21,6 +21,8 @@ from app.db.roles import (
 from app.db.schema import has_any_users, init_db
 from app.db.subscriptions import (
     add_period,
+    combine_preview,
+    combine_subscriptions,
     current_price,
     delete_period,
     get_active_subscriptions,
@@ -30,8 +32,10 @@ from app.db.subscriptions import (
     get_periods_map,
     get_subscription,
     is_active_on,
+    plan_combine,
     purge_subscription,
     restore_subscription,
+    same_name_subscriptions,
     upcoming_price_change,
     update_period,
     validate_periods,
@@ -69,6 +73,8 @@ __all__ = [
     "get_categories", "get_periods", "get_periods_map", "is_active_on",
     "current_price", "upcoming_price_change", "validate_periods", "add_period",
     "update_period", "delete_period", "restore_subscription", "purge_subscription",
+    "combine_subscriptions", "combine_preview", "plan_combine",
+    "same_name_subscriptions",
     "get_team", "list_all_teams", "list_user_teams", "get_membership",
     "list_team_members", "count_team_admins", "member_count", "create_team",
     "add_member", "set_member_role", "remove_member", "get_membership_by_id",

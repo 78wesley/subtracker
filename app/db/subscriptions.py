@@ -231,6 +231,87 @@ def add_period(db, subscription_id: int, amount: float, start_date: str,
     return "", note
 
 
+def plan_combine(target_periods: list, source_periods: list) -> tuple:
+    """
+    Work out what merging `source_periods` into `target_periods` would do, without
+    touching the database. Returns (error, closes, moved) where `closes` is
+    {period_id: new_end_date} for open-ended periods that the merge closes off.
+
+    The rule is add_period's, applied across the whole merged timeline: an
+    open-ended period is closed the day before the next period starts, because a
+    later period is the "further notice" that ends the open run. That is exactly the
+    case this exists for — importing newer prices for a subscription whose current
+    period is still open-ended. Genuine overlaps between bounded periods are
+    rejected and nothing is changed.
+    """
+    ordered = sorted(target_periods + source_periods,
+                     key=lambda p: (p["start_date"], p.get("id") or 0))
+    closes: dict = {}
+    for prev, nxt in zip(ordered, ordered[1:]):
+        if prev["end_date"] is None and prev["start_date"] < nxt["start_date"]:
+            closes[prev["id"]] = (date.fromisoformat(nxt["start_date"])
+                                  - timedelta(days=1)).isoformat()
+    proposed = [{**p, "end_date": closes.get(p["id"], p["end_date"])} for p in ordered]
+    err = validate_periods(proposed)
+    if err:
+        return err, {}, 0
+    return "", closes, len(source_periods)
+
+
+def combine_subscriptions(db, target_id: int, source_id: int) -> tuple:
+    """
+    Move every period from `source_id` onto `target_id` and soft-delete the source.
+
+    Periods keep their identity (they are re-pointed, not copied), so who added a
+    price and when survives the merge. Returns (error, moved, note); on error
+    nothing is written. Callers are responsible for permissions and auditing.
+    """
+    if target_id == source_id:
+        return "A subscription cannot be combined with itself.", 0, ""
+
+    target_periods = get_periods(db, target_id)
+    source_periods = get_periods(db, source_id)
+    err, closes, moved = plan_combine(target_periods, source_periods)
+    if err:
+        return err, 0, ""
+
+    for period_id, end_date in closes.items():
+        db["subscription_periods"].update(period_id, {"end_date": end_date})
+    for p in source_periods:
+        db["subscription_periods"].update(p["id"], {"subscription_id": target_id})
+
+    now = timeutil.now_iso()
+    db["subscriptions"].update(target_id, {"updated_at": now})
+    closed_target = [c for pid, c in closes.items()
+                     if pid in {p["id"] for p in target_periods}]
+    note = (f"Closed the open-ended period on {min(closed_target)}." if closed_target else "")
+    return "", moved, note
+
+
+def combine_preview(db, target_id: int, source_id: int) -> tuple:
+    """(error, summary) describing what combining `source_id` into `target_id` does."""
+    target_periods = get_periods(db, target_id)
+    source_periods = get_periods(db, source_id)
+    err, closes, moved = plan_combine(target_periods, source_periods)
+    if err:
+        return err, ""
+    closed = [c for pid, c in closes.items()
+              if pid in {p["id"] for p in target_periods}]
+    summary = f"moves {moved} period{'' if moved == 1 else 's'} across"
+    if closed:
+        summary += f" and closes the open-ended period on {min(closed)}"
+    return "", summary
+
+
+def same_name_subscriptions(db, ctx, name: str, exclude_id: int) -> list:
+    """Other live subscriptions in scope whose name matches `name` (case-insensitive)."""
+    tc, tp = _team_clause(ctx)
+    return rows_as_dicts(db,
+        f"SELECT * FROM subscriptions WHERE {tc} AND deleted_at IS NULL "
+        "AND id != ? AND LOWER(TRIM(name)) = LOWER(TRIM(?)) ORDER BY id ASC",
+        list(tp) + [exclude_id, name])
+
+
 def update_period(db, subscription_id: int, period_id: int, amount: float,
                   start_date: str, end_date: str) -> str:
     """Update a period, re-validating against the others. Returns "" or an error."""

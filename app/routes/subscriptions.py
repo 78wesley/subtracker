@@ -21,9 +21,12 @@ from app.components import (
     badge,
     bar_chart,
     category_label,
+    combine_button,
+    combine_confirm,
     fmt_eur,
     nav_bar,
     page_title,
+    plural,
     section_card,
     status_badge,
     subscription_form,
@@ -41,6 +44,8 @@ from app.cost_utils import (
 from app.db import (
     add_period,
     audit,
+    combine_preview,
+    combine_subscriptions,
     current_price,
     delete_period,
     get_audit_for_entity,
@@ -49,11 +54,13 @@ from app.db import (
     get_periods,
     get_subscription,
     is_active_on,
+    same_name_subscriptions,
     update_period,
     validate_periods,
 )
 from app.permissions import Perm
 from app.styles import (
+    ALERT,
     CHARTS_GRID,
     COST_AMOUNT,
     COST_CARD,
@@ -539,6 +546,32 @@ def _history_tab(audit_entries):
     )]
 
 
+def _duplicate_banner(sub_id, sub, duplicates, db):
+    """Offer to fold same-named subscriptions into this one, saying what that does."""
+    rows = []
+    for d in duplicates:
+        err, summary = combine_preview(db, sub_id, d["id"])
+        periods = get_periods(db, d["id"])
+        label = (f"#{d['id']} · {plural(len(periods), 'period')}"
+                 + (f" · from {periods[0]['start_date']}" if periods else ""))
+        rows.append(Div(
+            Span(label, cls=MUTED_SM),
+            (Span(f"cannot combine: {err}", cls="text-sm text-destructive") if err
+             else combine_button(sub_id, d["id"],
+                                 combine_confirm(sub["name"], d["name"], summary,
+                                                 sub_id, d["id"]))),
+            cls="flex items-center justify-between gap-3 py-1 flex-wrap",
+        ))
+    return Div(
+        P(f"{plural(len(duplicates), 'other subscription')} in this team "
+          f"named “{sub['name']}”. Combining moves their periods here and closes "
+          f"an open-ended period the day before the next one starts.",
+          cls="text-sm mb-2"),
+        *rows,
+        cls=ALERT["warning"],
+    )
+
+
 @ar("/subscriptions/{sub_id}/detail")
 def get(req, session, sub_id: int, tab: str = "overview", msg: str = "",
         msg_kind: str = "warning"):
@@ -589,14 +622,62 @@ def get(req, session, sub_id: int, tab: str = "overview", msg: str = "",
     else:
         panels = _overview_tab(sub, periods, price, freq_lbl, upcoming, today, can_edit)
 
+    duplicates = (same_name_subscriptions(db, ctx, sub["name"], sub_id)
+                  if (can_edit and can_delete) else [])
+
     return page_title(sub["name"]), nav_bar(ctx, "manage"), Main(
         A("← All subscriptions", href="/manage", cls=LINK + " inline-block mb-3"),
         alert(msg, msg_kind) if msg else "",
+        _duplicate_banner(sub_id, sub, duplicates, db) if duplicates else "",
         _detail_header(sub, price, freq_lbl, active, upcoming[0] if upcoming else None,
                        today, actions),
         tab_nav(tabs, tab, lambda k: f"/subscriptions/{sub_id}/detail?tab={k}"),
         *panels,
     )
+
+
+# ── Combine two subscriptions ────────────────────────────────────────────────
+
+@ar("/subscriptions/{target_id}/combine/{source_id}")
+async def post(req, session, target_id: int, source_id: int):
+    """
+    Fold `source_id` into `target_id`: its periods move across and it is
+    soft-deleted. This is the cure for a duplicate — most often an import that
+    added newer prices as a second subscription instead of as periods of the
+    existing one, whose current period is still open-ended.
+    """
+    ctx = req.scope["ctx"]
+    if (r := require(ctx, Perm.SUB_EDIT, Perm.SUB_DELETE)): return r
+    db = get_db()
+    target = get_subscription(db, ctx, target_id)
+    source = get_subscription(db, ctx, source_id)
+    if not target or not source:
+        return RedirectResponse("/manage", status_code=303)
+    # A super admin in cross-team view can reach both rows; combining across teams
+    # would silently move one team's price history into another's.
+    if target["team_id"] != source["team_id"]:
+        return _detail_redirect(target_id, "Those subscriptions belong to different "
+                                "teams and cannot be combined.", "error")
+
+    err, moved, note = combine_subscriptions(db, target_id, source_id)
+    if err:
+        return _detail_redirect(target_id, f"Could not combine: {err}", "error", tab="periods")
+
+    now = timeutil.now_iso()
+    db["subscriptions"].update(source_id, {
+        "deleted_at": now, "deleted_by": ctx.user["id"], "updated_at": now,
+    })
+    desc = (f"Combined '{source['name']}' (#{source_id}) into '{target['name']}' "
+            f"(#{target_id}): moved {plural(moved, 'period')}")
+    if note:
+        desc += f" — {note}"
+    audit(ctx, "COMBINE", "subscription", target_id, target["name"], desc,
+          new_values={"merged_from": source["name"], "merged_from_id": source_id,
+                      "periods_moved": moved})
+    audit(ctx, "DELETE", "subscription", source_id, source["name"],
+          f"Combined into '{target['name']}' (#{target_id}) and soft-deleted",
+          new_values={"deleted_at": now, "merged_into_id": target_id})
+    return _detail_redirect(target_id, desc + ".", "success", tab="periods")
 
 
 # ── Soft-delete a subscription ───────────────────────────────────────────────
