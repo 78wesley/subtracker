@@ -168,6 +168,38 @@ def forbidden_page(ctx, missing):
     )
 
 
+# shadcn Tabs recipe — a muted "track" holding one pill per tab. Tabs here are
+# links (?tab=…) rather than client-side panels, so a deep link / reload / redirect
+# after a POST all land on the right tab without any JS.
+_TABS = ("inline-flex flex-wrap items-center justify-start gap-1 rounded-lg bg-muted "
+         "p-1 text-muted-foreground mb-4")
+_TAB = ("inline-flex items-center justify-center gap-1.5 whitespace-nowrap rounded-md "
+        "px-3 py-1.5 text-sm font-medium transition-all hover:text-foreground "
+        "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring")
+_TAB_ACTIVE = "bg-background text-foreground shadow"
+_TAB_COUNT = ("rounded bg-foreground/10 px-1.5 text-[11px] font-normal tabular-nums "
+              "text-muted-foreground")
+
+
+def tab_nav(items: list, active: str, href) -> Div:
+    """
+    Tab strip from [(key, label)] (optionally (key, label, badge_text)); `href(key)`
+    builds each tab's URL and `active` is the currently-shown key.
+    """
+    tabs = []
+    for item in items:
+        key, label = item[0], item[1]
+        count = item[2] if len(item) > 2 else None
+        tabs.append(A(
+            label,
+            Span(str(count), cls=_TAB_COUNT) if count else "",
+            href=href(key), role="tab",
+            **{"aria-selected": "true" if key == active else "false"},
+            cls=_TAB + (" " + _TAB_ACTIVE if key == active else ""),
+        ))
+    return Div(*tabs, cls=_TABS, role="tablist")
+
+
 def section_card(*children, heading: str = None) -> Div:
     inner = [H3(heading, cls="mb-3")] if heading else []
     inner += list(children)

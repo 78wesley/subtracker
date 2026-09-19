@@ -134,6 +134,43 @@ def action_menu(sub_id: int, name: str, *, can_edit: bool = True,
     return dropdown_menu("Actions", *items)
 
 
+def combine_confirm(target_name: str, source_name: str, summary: str,
+                    target_id: int = None, source_id: int = None) -> str:
+    """The prompt shown before a combine runs — it spells out what will change.
+
+    Duplicates usually share a name, so each side is tagged with its id."""
+    tag = lambda name, sid: f"“{name}”" + (f" (#{sid})" if sid else "")   # noqa: E731
+    return (f"Combine {tag(source_name, source_id)} into {tag(target_name, target_id)}? "
+            f"This {summary}, then soft-deletes {tag(source_name, source_id)}.")
+
+
+def combine_button(target_id: int, source_id: int, confirm: str,
+                   label: str = "Combine") -> Button:
+    """Fold subscription `source_id` into `target_id` after an explicit confirm."""
+    return Button(label, cls=btn("outline", "sm"),
+                  hx_post=f"/subscriptions/{target_id}/combine/{source_id}",
+                  hx_confirm=confirm, hx_target="body", hx_push_url="true")
+
+
+_DISCLOSURE_SUMMARY = ("inline-flex items-center gap-1.5 cursor-pointer select-none "
+                       "text-sm text-muted-foreground hover:text-foreground "
+                       "transition-colors list-none marker:hidden "
+                       "[&::-webkit-details-marker]:hidden")
+
+
+def disclosure(label: str, *children, open_: bool = False) -> Details:
+    """A plain show/hide toggle: a chevron summary over hidden content.
+
+    Native <details>, so it needs no JS; the chevron flip lives in GLOBALS, scoped
+    to `details[data-disclosure]`."""
+    return Details(
+        Summary(label, _CHEVRON, cls=_DISCLOSURE_SUMMARY),
+        Div(*children, cls="mt-2"),
+        data_disclosure=True,
+        **({"open": True} if open_ else {}),
+    )
+
+
 def pagination_bar(page: int, total_pages: int, base_url: str) -> Div:
     sep = "&" if "?" in base_url else "?"
     prev_btn = (A("← Prev", href=f"{base_url}{sep}page={page-1}", role="button",

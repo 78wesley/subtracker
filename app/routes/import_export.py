@@ -21,11 +21,20 @@ from fasthtml.common import *
 
 from app import timeutil
 from app.authz import require, writable_team
-from app.components import alert, nav_bar, page_title, section_card
+from app.components import (
+    alert,
+    combine_button,
+    combine_confirm,
+    nav_bar,
+    page_title,
+    plural,
+    section_card,
+)
 from app.cost_utils import normalise_cadence
 from app.db import (
     add_period,
     audit,
+    combine_preview,
     get_all_subscriptions,
     get_db,
     get_periods_map,
@@ -209,8 +218,16 @@ def _parse_json(text: str) -> tuple:
 
 
 def _import_subs(db, ctx, parsed) -> tuple:
-    """Create each parsed subscription + its periods. Returns (created, periods, errors)."""
-    created, periods_added, errors = 0, 0, []
+    """
+    Create each parsed subscription + its periods.
+    Returns (created, periods, errors, clashes), where `clashes` names the created
+    rows whose name was already taken — the import page offers to combine those
+    into the subscription that already existed rather than leaving a duplicate.
+    """
+    created, periods_added, errors, clashes = 0, 0, [], []
+    # Names already in the team, before this import; created rows join the map so a
+    # file listing the same name twice also reports the second one as a duplicate.
+    existing = {s["name"].strip().lower(): s["id"] for s in get_all_subscriptions(db, ctx)}
     now = timeutil.now_iso()
     for sub in parsed:
         freq, interval, base_unit = normalise_cadence(sub["frequency"], sub["interval"],
@@ -236,18 +253,73 @@ def _import_subs(db, ctx, parsed) -> tuple:
                 n += 1
         periods_added += n
         created += 1
+        key = sub["name"].strip().lower()
+        if key in existing:
+            clashes.append({"target_id": existing[key], "source_id": sub_id,
+                            "name": sub["name"], "periods": n})
+        else:
+            existing[key] = sub_id
         audit(ctx, "CREATE", "subscription", sub_id, sub["name"],
               f"Imported '{sub['name']}' with {n} period(s)",
               new_values={"name": sub["name"], "frequency": freq, "category": category}, db=db)
-    return created, periods_added, errors
+    return created, periods_added, errors, clashes
 
 
 # ── Import / Export page ────────────────────────────────────────────────────────
 
-def _result_block(created: int, periods_added: int, errors: list):
-    kind = "success" if (created and not errors) else ("warning" if created else "error")
+def _combine_card(db, ctx, clashes: list):
+    """
+    Prompt to fold each freshly-imported duplicate into the subscription that
+    already existed — the usual case being newer prices imported for a
+    subscription whose current period is still open-ended.
+    """
+    if not clashes:
+        return ""
+    can_combine = ctx.can(Perm.SUB_EDIT) and ctx.can(Perm.SUB_DELETE)
+    rows = []
+    for c in clashes:
+        err, preview = combine_preview(db, c["target_id"], c["source_id"])
+        if not can_combine:
+            action = Span("ask a team admin to combine them", cls=MUTED_SM)
+        elif err:
+            action = Span(f"cannot combine: {err}", cls="text-sm text-destructive")
+        else:
+            action = combine_button(
+                c["target_id"], c["source_id"],
+                combine_confirm(c["name"], c["name"], preview,
+                                c["target_id"], c["source_id"]), label="Combine")
+        rows.append(Div(
+            Div(Strong(c["name"]),
+                Div(f"imported as #{c['source_id']} with {plural(c['periods'], 'period')} · "
+                    f"already existed as #{c['target_id']}"
+                    + (f" — combining {preview}" if preview else ""),
+                    cls=MUTED_SM),
+                cls="min-w-0"),
+            Div(action,
+                A("Open", href=f"/subscriptions/{c['target_id']}/detail?tab=periods",
+                  role="button", cls=btn("outline", "sm")),
+                cls="flex items-center gap-2 shrink-0"),
+            cls="flex items-start justify-between gap-3 flex-wrap py-2 border-b last:border-0",
+        ))
+    return section_card(
+        P("These were imported as new subscriptions because a subscription with the "
+          "same name already exists. Combining moves the imported periods into the "
+          "existing subscription and closes its open-ended period the day before the "
+          "next one starts.", cls=MUTED_SM + " mb-2"),
+        *rows,
+        heading=f"Combine {plural(len(clashes), 'duplicate')}?",
+    )
+
+
+def _result_block(created: int, periods_added: int, errors: list,
+                  clashes: list = (), db=None, ctx=None):
+    kind = ("error" if not created
+            else ("warning" if (errors or clashes) else "success"))
     summary = (f"Imported {created} subscription(s) and {periods_added} period(s)."
                if created else "No subscriptions were imported.")
+    if clashes:
+        summary += (f" {plural(len(clashes), 'name')} already existed — combine them "
+                    f"below to keep one subscription with its full price history.")
     issues = (
         section_card(
             P(f"{len(errors)} issue(s) while importing:", cls="font-medium text-sm mb-2"),
@@ -255,7 +327,8 @@ def _result_block(created: int, periods_added: int, errors: list):
             (P(f"…and {len(errors) - 30} more.", cls=MUTED_SM) if len(errors) > 30 else ""),
         ) if errors else ""
     )
-    return Div(alert(summary, kind), issues)
+    combine = _combine_card(db, ctx, list(clashes)) if clashes else ""
+    return Div(alert(summary, kind), combine, issues)
 
 
 def _page(ctx, result=None):
@@ -292,6 +365,9 @@ def _page(ctx, result=None):
                   "(repeat the identity columns on each period row). Leave the "
                   "amount/start_date columns blank for a subscription with no "
                   "periods yet.", cls=MUTED_SM),
+                P("A name that already exists in this team is imported as a separate "
+                  "subscription and then offered for combining, which moves the new "
+                  "periods into the existing one.", cls=MUTED_SM),
                 P("JSON — an object with a \"subscriptions\" array; each entry carries "
                   "its identity fields plus a nested \"periods\" list.",
                   cls="text-sm mt-2"),
@@ -351,5 +427,7 @@ async def post(req, session):
         return _page(ctx, alert(f"Too many subscriptions in one import ({len(parsed)}); "
                                 f"the limit is {MAX_IMPORT_SUBS}.", "error"))
 
-    created, periods_added, import_errors = _import_subs(db=get_db(), ctx=ctx, parsed=parsed)
-    return _page(ctx, _result_block(created, periods_added, errors + import_errors))
+    db = get_db()
+    created, periods_added, import_errors, clashes = _import_subs(db=db, ctx=ctx, parsed=parsed)
+    return _page(ctx, _result_block(created, periods_added, errors + import_errors,
+                                    clashes, db, ctx))

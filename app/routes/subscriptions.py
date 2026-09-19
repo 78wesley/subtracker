@@ -7,6 +7,7 @@ are derived from those periods. All reads go through the team-scoped
 get_subscription(db, ctx, ...); all writes are gated by require(ctx, ...) and audited.
 """
 
+import calendar
 from datetime import date
 from urllib.parse import quote_plus
 
@@ -20,13 +21,16 @@ from app.components import (
     badge,
     bar_chart,
     category_label,
-    collapsible_card,
+    combine_button,
+    combine_confirm,
     fmt_eur,
     nav_bar,
     page_title,
+    plural,
     section_card,
     status_badge,
     subscription_form,
+    tab_nav,
 )
 from app.cost_utils import (
     frequency_label,
@@ -40,6 +44,8 @@ from app.cost_utils import (
 from app.db import (
     add_period,
     audit,
+    combine_preview,
+    combine_subscriptions,
     current_price,
     delete_period,
     get_audit_for_entity,
@@ -48,21 +54,36 @@ from app.db import (
     get_periods,
     get_subscription,
     is_active_on,
+    same_name_subscriptions,
     update_period,
     validate_periods,
 )
 from app.permissions import Perm
-from app.styles import INPUT, LINK, MUTED_SM, PAGE_HEADER, TABLE, TABLE_WRAP, btn
+from app.styles import (
+    ALERT,
+    CHARTS_GRID,
+    COST_AMOUNT,
+    COST_CARD,
+    COST_LABEL,
+    INPUT,
+    LINK,
+    MUTED_SM,
+    PAGE_HEADER,
+    TABLE,
+    TABLE_WRAP,
+    btn,
+)
 
 ar = APIRouter()
 
 _PERIODS = ["daily", "weekly", "monthly", "quarterly", "yearly"]
 
 
-def _detail_redirect(sub_id: int, msg: str = "", kind: str = "warning"):
-    url = f"/subscriptions/{sub_id}/detail"
+def _detail_redirect(sub_id: int, msg: str = "", kind: str = "warning",
+                     tab: str = "periods"):
+    url = f"/subscriptions/{sub_id}/detail?tab={tab}"
     if msg:
-        url += f"?msg={quote_plus(msg)}&msg_kind={kind}"
+        url += f"&msg={quote_plus(msg)}&msg_kind={kind}"
     return RedirectResponse(url, status_code=303)
 
 
@@ -225,7 +246,7 @@ def get(req, session, sub_id: int, period_id: int):
 
     return page_title(f"Edit Period – {sub['name']}"), nav_bar(ctx, "manage"), Main(
         Div(H2(f"Edit Period: {sub['name']}"),
-            A("← Back", href=f"/subscriptions/{sub_id}/detail", cls=LINK),
+            A("← Back", href=f"/subscriptions/{sub_id}/detail?tab=periods", cls=LINK),
             cls=PAGE_HEADER),
         Form(
             Label("Amount (€) *",
@@ -295,50 +316,75 @@ async def post(req, session, sub_id: int, period_id: int):
 
 # ── Subscription detail ──────────────────────────────────────────────────────
 
-@ar("/subscriptions/{sub_id}/detail")
-def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
-    ctx = req.scope["ctx"]
-    if (r := require(ctx, Perm.SUB_VIEW)): return r
-    db = get_db()
-    sub = get_subscription(db, ctx, sub_id)
-    if not sub:
-        return RedirectResponse("/manage", status_code=303)
+# The detail page is split into linked tabs (?tab=…) instead of one long stack of
+# cards: the summary header + figures always show, and each tab holds one concern.
+_TAB_KEYS = ["overview", "spend", "periods", "history"]
 
-    today = timeutil.today()
-    today_iso = today.isoformat()
-    periods = get_periods(db, sub_id)
-    active = is_active_on(periods, today_iso)
-    price = current_price(periods)
-    audit_entries = get_audit_for_entity(db, sub_id, "subscription")
-    freq_lbl = frequency_label(sub["frequency"], sub["interval"] or 1, sub.get("base_unit"))
 
-    can_edit = ctx.can(Perm.SUB_EDIT)
-    can_delete = ctx.can(Perm.SUB_DELETE)
-    actions = []
-    if can_edit:
-        actions.append(
-            A("✏️ Edit", href=f"/subscriptions/{sub_id}/edit", role="button", cls=btn("outline")))
-    if can_delete:
-        actions.append(Button("🗑️ Delete",
-                       hx_post=f"/subscriptions/{sub_id}/delete",
-                       hx_confirm=f"Delete '{sub['name']}'? (soft-delete)",
-                       hx_target="body", hx_push_url="true", cls=btn("destructive")))
+def _kv(label, value):
+    return Div(Div(label, cls="text-xs text-muted-foreground mb-0.5"), Div(value))
 
-    def kv(label, value):
-        return Div(Div(label, cls="text-xs text-muted-foreground mb-0.5"), Div(value))
 
-    info = section_card(
-        H3(sub["name"]),
+def _figure(label, value, caption=None):
+    return Div(
+        Div(label, cls=COST_LABEL),
+        Div(value, cls=COST_AMOUNT),
+        Div(caption, cls="text-xs text-muted-foreground mt-1 truncate") if caption else "",
+        cls=COST_CARD,
+    )
+
+
+def _relative_day(d: date, today: date) -> str:
+    days = (d - today).days
+    if days == 0: return "today"
+    if days == 1: return "tomorrow"
+    return f"in {days} days" if days > 0 else f"{-days} days ago"
+
+
+def _detail_header(sub, price, freq_lbl, active, next_pay, today, actions):
+    """Name + status + current price + next payment + actions, in one card."""
+    subtitle = freq_lbl
+    if next_pay:
+        subtitle += f" · next {next_pay['date'].isoformat()} ({_relative_day(next_pay['date'], today)})"
+    return Div(
         Div(
-            kv("Current Price", Strong(fmt_eur(price)) if price is not None else "—"),
-            kv("Frequency", freq_lbl),
-            kv("Status", status_badge(active)),
-            kv("Category", badge(category_label(sub.get("category")), "info")),
-            kv("Currency", sub["currency"] or "EUR"),
-            cls="grid grid-cols-2 sm:grid-cols-3 gap-4 my-4",
+            H2(sub["name"], cls="truncate"),
+            Div(status_badge(active),
+                badge(category_label(sub.get("category")), "info"),
+                cls="flex flex-wrap items-center gap-2 mt-2"),
+            cls="min-w-0 flex-1",
         ),
-        Div(Div("Notes", cls="text-xs text-muted-foreground mb-0.5"), Div(sub["notes"] or "—")),
-        Div(*actions, cls="flex gap-2 flex-wrap mt-4") if actions else "",
+        Div(
+            Div(fmt_eur(price) if price is not None else "—",
+                cls="text-3xl font-bold tracking-tight"),
+            Div(subtitle, cls=MUTED_SM),
+            cls="sm:text-right",
+        ),
+        Div(*actions, cls="flex gap-2 flex-wrap") if actions else "",
+        cls="flex flex-wrap items-start justify-between gap-4 rounded-xl border "
+            "bg-card p-5 mb-4",
+    )
+
+
+def _overview_tab(sub, periods, price, freq_lbl, upcoming, today, can_edit):
+    started = min((p["start_date"] for p in periods), default=None)
+    ends = next((p["end_date"] for p in sorted(periods, key=lambda p: p["start_date"],
+                                               reverse=True)), None)
+
+    details = section_card(
+        Div(
+            _kv("Current price", Strong(fmt_eur(price)) if price is not None else "—"),
+            _kv("Billing frequency", freq_lbl),
+            _kv("Category", badge(category_label(sub.get("category")), "info")),
+            _kv("Currency", sub["currency"] or "EUR"),
+            _kv("Tracking since", started or "—"),
+            _kv("Ends", ends or "open-ended"),
+            cls="grid grid-cols-2 sm:grid-cols-3 gap-4",
+        ),
+        Div(Div("Notes", cls="text-xs text-muted-foreground mb-0.5"),
+            Div(sub["notes"] or "—", cls="whitespace-pre-line"),
+            cls="mt-4 pt-4 border-t"),
+        heading="Details",
     )
 
     costs = section_card(
@@ -350,31 +396,71 @@ def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
                        for p in _PERIODS])),
             cls=TABLE,
         ), cls=TABLE_WRAP),
-        heading="Cost Breakdown (current price)",
+        P("The same price expressed per period — useful for comparing subscriptions "
+          "that bill on different cadences.", cls=MUTED_SM + " mt-2"),
+        heading="What it costs per period",
     ) if price is not None else ""
 
-    # Spend-over-time charts for the current year + lifetime total.
-    spend_section = ""
-    if periods:
-        year = today.year
-        monthly = monthly_costs_for_year(sub, periods, year)
-        year_total = year_cost(sub, periods, year)
-        first_start = date.fromisoformat(min(p["start_date"] for p in periods))
-        lifetime = range_cost(sub, periods, first_start, today)
-
-        def figure(label, value):
-            return Div(Div(label, cls="text-xs text-muted-foreground"),
-                       Div(fmt_eur(value), cls="text-2xl font-semibold tracking-tight"))
-
-        spend_section = section_card(
-            Div(figure(f"This year ({year})", year_total),
-                figure("All-time", lifetime),
-                cls="flex gap-10 mb-4"),
-            Div(P("Monthly spend", cls="text-sm font-medium text-muted-foreground mb-2"),
-                bar_chart(MONTH_LABELS, monthly)),
-            heading=f"Spend over time ({year})",
+    if upcoming:
+        rows = [
+            Div(
+                Span(pay["date"].isoformat(), cls="tabular-nums"),
+                Span(Span(_relative_day(pay["date"], today),
+                          cls="text-muted-foreground text-sm mr-3"),
+                     Strong(fmt_eur(pay["amount"]), cls="tabular-nums")),
+                cls="flex justify-between items-center py-2 border-b last:border-0",
+            )
+            for pay in upcoming
+        ]
+        total = round(sum(p["amount"] for p in upcoming), 2)
+        payments = section_card(
+            *rows,
+            P(f"Next {len(upcoming)} payments add up to {fmt_eur(total)}.",
+              cls=MUTED_SM + " mt-3"),
+            heading="Next expected payments",
+        )
+    else:
+        hint = (" Add a period covering today to start tracking payments again."
+                if can_edit else "")
+        payments = section_card(
+            P("No upcoming payments — this subscription is not currently active." + hint,
+              cls=MUTED_SM),
+            heading="Next expected payments",
         )
 
+    return [details, Div(costs, payments, cls=CHARTS_GRID) if costs else payments]
+
+
+def _spend_tab(sub, periods, today):
+    if not periods:
+        return [section_card(P("No periods recorded yet, so there is nothing to chart.",
+                               cls=MUTED_SM), heading="Spend over time")]
+    year = today.year
+    monthly = monthly_costs_for_year(sub, periods, year)
+    year_total = year_cost(sub, periods, year)
+    first_start = date.fromisoformat(min(p["start_date"] for p in periods))
+    lifetime = range_cost(sub, periods, first_start, today)
+    months_tracked = max(1, (today - first_start).days / 30.4375)
+
+    return [
+        Div(
+            _figure(f"This year ({year})", fmt_eur(year_total)),
+            _figure("All-time", fmt_eur(lifetime), f"since {first_start.isoformat()}"),
+            _figure("Average / month", fmt_eur(round(lifetime / months_tracked, 2)),
+                    "over the tracked period"),
+            cls="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5",
+        ),
+        section_card(
+            bar_chart(MONTH_LABELS, monthly,
+                      tip_labels=[f"{calendar.month_name[m + 1]} {year}" for m in range(12)]),
+            P("Cost is spread across the days each period was active — hover a bar for "
+              "the exact amount, click to keep it open.", cls=MUTED_SM),
+            heading=f"Monthly spend in {year}",
+        ),
+    ]
+
+
+def _periods_tab(sub_id, periods, today_iso, can_edit):
     def period_status(p):
         if p["start_date"] <= today_iso and (p["end_date"] is None or p["end_date"] >= today_iso):
             return badge("Active", "active")
@@ -382,11 +468,11 @@ def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
             return badge("Upcoming", "info")
         return badge("Ended", "inactive")
 
-    period_rows = [
+    rows = [
         Tr(
-            Td(fmt_eur(p["amount"]), cls="nowrap"),
-            Td(p["start_date"], cls="nowrap"),
-            Td(p["end_date"] or "open-ended", cls="nowrap"),
+            Td(fmt_eur(p["amount"]), cls="nowrap tabular-nums"),
+            Td(p["start_date"], cls="nowrap tabular-nums"),
+            Td(p["end_date"] or "open-ended", cls="nowrap tabular-nums"),
             Td(period_status(p), cls="nowrap"),
             Td(
                 Div(
@@ -404,8 +490,23 @@ def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
         for p in periods
     ]
 
-    add_period_form = (
-        section_card(
+    table = (Div(Table(
+        Thead(Tr(Th("Amount"), Th("Start"), Th("End"), Th("Status"),
+                 *([Th("")] if can_edit else []))),
+        Tbody(*rows), cls=TABLE,
+    ), cls=TABLE_WRAP) if rows else P("No periods yet — add the first one below.",
+                                      cls=MUTED_SM))
+
+    out = [section_card(
+        P("A period is one stretch of time at one price. Add a new period when the "
+          "price changes or the subscription pauses and resumes; the old one is closed "
+          "automatically.", cls=MUTED_SM + " mb-3"),
+        table,
+        heading="Periods",
+    )]
+
+    if can_edit:
+        out.append(section_card(
             Form(
                 Div(
                     Label("Amount (€) *",
@@ -419,64 +520,164 @@ def get(req, session, sub_id: int, msg: str = "", msg_kind: str = "warning"):
                     Label("End Date",
                           Input(name="end_date", type="date", cls=INPUT),
                           cls="grid gap-1.5 text-sm font-medium"),
-                    Div(Button("Add Period", type="submit", cls=btn("outline")),
+                    Div(Button("Add Period", type="submit", cls=btn()),
                         cls="flex items-end"),
                     cls="grid gap-3 sm:grid-cols-4 items-start",
                 ),
                 method="post", action=f"/subscriptions/{sub_id}/periods/add",
             ),
-            heading="Add Period",
-        ) if can_edit else ""
-    )
-
-    periods_section = section_card(
-        heading="Periods",
-        *([Div(Table(
-            Thead(Tr(Th("Amount"), Th("Start"), Th("End"), Th("Status"),
-                     *([Th("")] if can_edit else []))),
-            Tbody(*period_rows), cls=TABLE,
-        ), cls=TABLE_WRAP)] if period_rows else [P("No periods yet. Add one below.", cls=MUTED_SM)]),
-    )
-
-    upcoming = []
-    for pay in upcoming_payments_for_periods(sub, periods, count=6, reference=today):
-        days_from_now = (pay["date"] - today).days
-        label = "today" if days_from_now == 0 else (
-            f"in {days_from_now} day{'s' if days_from_now != 1 else ''}"
-            if days_from_now > 0 else f"{-days_from_now}d ago"
-        )
-        upcoming.append(Div(
-            Span(pay["date"].isoformat()),
-            Span(Span(label, cls="text-muted-foreground text-sm mr-2"),
-                 Strong(fmt_eur(pay["amount"]))),
-            cls="flex justify-between items-center py-2 border-b last:border-0",
+            heading="Add a period",
         ))
+    return out
 
-    next_payments = section_card(
-        heading="Next Expected Payments",
-        *(upcoming if upcoming else [P("No upcoming payments — subscription is not "
-                                       "currently active.")]),
-    )
 
-    audit_rows = [
-        Tr(Td(a["timestamp"][:16], cls="nowrap"), Td(a["action"], cls="nowrap"),
+def _history_tab(audit_entries):
+    if not audit_entries:
+        return [section_card(P("No audit entries yet.", cls=MUTED_SM), heading="History")]
+    rows = [
+        Tr(Td(a["timestamp"][:16], cls="nowrap tabular-nums"), Td(a["action"], cls="nowrap"),
            Td(a["description"]))
         for a in audit_entries
     ]
-    # Audit history is hidden from roles without audit access (e.g. viewers).
-    audit_section = collapsible_card(
-        f"Audit Log ({len(audit_entries)} entries)",
-        Div(Table(
-            Thead(Tr(Th("Time"), Th("Action"), Th("Description"))),
-            Tbody(*audit_rows), cls=TABLE,
-        ), cls=TABLE_WRAP) if audit_rows else P("No audit entries.", cls=MUTED_SM),
-    ) if ctx.can(Perm.AUDIT_VIEW) else ""
+    return [section_card(
+        Div(Table(Thead(Tr(Th("Time"), Th("Action"), Th("Description"))),
+                  Tbody(*rows), cls=TABLE), cls=TABLE_WRAP),
+        heading=f"History ({len(audit_entries)} entries)",
+    )]
+
+
+def _duplicate_banner(sub_id, sub, duplicates, db):
+    """Offer to fold same-named subscriptions into this one, saying what that does."""
+    rows = []
+    for d in duplicates:
+        err, summary = combine_preview(db, sub_id, d["id"])
+        periods = get_periods(db, d["id"])
+        label = (f"#{d['id']} · {plural(len(periods), 'period')}"
+                 + (f" · from {periods[0]['start_date']}" if periods else ""))
+        rows.append(Div(
+            Span(label, cls=MUTED_SM),
+            (Span(f"cannot combine: {err}", cls="text-sm text-destructive") if err
+             else combine_button(sub_id, d["id"],
+                                 combine_confirm(sub["name"], d["name"], summary,
+                                                 sub_id, d["id"]))),
+            cls="flex items-center justify-between gap-3 py-1 flex-wrap",
+        ))
+    return Div(
+        P(f"{plural(len(duplicates), 'other subscription')} in this team "
+          f"named “{sub['name']}”. Combining moves their periods here and closes "
+          f"an open-ended period the day before the next one starts.",
+          cls="text-sm mb-2"),
+        *rows,
+        cls=ALERT["warning"],
+    )
+
+
+@ar("/subscriptions/{sub_id}/detail")
+def get(req, session, sub_id: int, tab: str = "overview", msg: str = "",
+        msg_kind: str = "warning"):
+    ctx = req.scope["ctx"]
+    if (r := require(ctx, Perm.SUB_VIEW)): return r
+    db = get_db()
+    sub = get_subscription(db, ctx, sub_id)
+    if not sub:
+        return RedirectResponse("/manage", status_code=303)
+
+    today = timeutil.today()
+    today_iso = today.isoformat()
+    periods = get_periods(db, sub_id)
+    active = is_active_on(periods, today_iso)
+    price = current_price(periods)
+    freq_lbl = frequency_label(sub["frequency"], sub["interval"] or 1, sub.get("base_unit"))
+    upcoming = upcoming_payments_for_periods(sub, periods, count=6, reference=today)
+
+    can_edit = ctx.can(Perm.SUB_EDIT)
+    can_delete = ctx.can(Perm.SUB_DELETE)
+    can_audit = ctx.can(Perm.AUDIT_VIEW)
+
+    actions = []
+    if can_edit:
+        actions.append(
+            A("✏️ Edit", href=f"/subscriptions/{sub_id}/edit", role="button", cls=btn("outline")))
+    if can_delete:
+        actions.append(Button("🗑️ Delete",
+                       hx_post=f"/subscriptions/{sub_id}/delete",
+                       hx_confirm=f"Delete '{sub['name']}'? (soft-delete)",
+                       hx_target="body", hx_push_url="true", cls=btn("destructive")))
+
+    tabs = [("overview", "Overview"), ("spend", "Spend"),
+            ("periods", "Periods", len(periods))]
+    audit_entries = get_audit_for_entity(db, sub_id, "subscription") if can_audit else []
+    if can_audit:
+        tabs.append(("history", "History", len(audit_entries)))
+    # An unknown (or no-longer-permitted) tab falls back to the overview.
+    if tab not in {t[0] for t in tabs}:
+        tab = "overview"
+
+    if tab == "spend":
+        panels = _spend_tab(sub, periods, today)
+    elif tab == "periods":
+        panels = _periods_tab(sub_id, periods, today_iso, can_edit)
+    elif tab == "history":
+        panels = _history_tab(audit_entries)
+    else:
+        panels = _overview_tab(sub, periods, price, freq_lbl, upcoming, today, can_edit)
+
+    duplicates = (same_name_subscriptions(db, ctx, sub["name"], sub_id)
+                  if (can_edit and can_delete) else [])
 
     return page_title(sub["name"]), nav_bar(ctx, "manage"), Main(
-        Div(H2(sub["name"]), A("← Manage", href="/manage", cls=LINK), cls=PAGE_HEADER),
+        A("← All subscriptions", href="/manage", cls=LINK + " inline-block mb-3"),
         alert(msg, msg_kind) if msg else "",
-        info, costs, spend_section, periods_section, add_period_form, next_payments, audit_section,
+        _duplicate_banner(sub_id, sub, duplicates, db) if duplicates else "",
+        _detail_header(sub, price, freq_lbl, active, upcoming[0] if upcoming else None,
+                       today, actions),
+        tab_nav(tabs, tab, lambda k: f"/subscriptions/{sub_id}/detail?tab={k}"),
+        *panels,
     )
+
+
+# ── Combine two subscriptions ────────────────────────────────────────────────
+
+@ar("/subscriptions/{target_id}/combine/{source_id}")
+async def post(req, session, target_id: int, source_id: int):
+    """
+    Fold `source_id` into `target_id`: its periods move across and it is
+    soft-deleted. This is the cure for a duplicate — most often an import that
+    added newer prices as a second subscription instead of as periods of the
+    existing one, whose current period is still open-ended.
+    """
+    ctx = req.scope["ctx"]
+    if (r := require(ctx, Perm.SUB_EDIT, Perm.SUB_DELETE)): return r
+    db = get_db()
+    target = get_subscription(db, ctx, target_id)
+    source = get_subscription(db, ctx, source_id)
+    if not target or not source:
+        return RedirectResponse("/manage", status_code=303)
+    # A super admin in cross-team view can reach both rows; combining across teams
+    # would silently move one team's price history into another's.
+    if target["team_id"] != source["team_id"]:
+        return _detail_redirect(target_id, "Those subscriptions belong to different "
+                                "teams and cannot be combined.", "error")
+
+    err, moved, note = combine_subscriptions(db, target_id, source_id)
+    if err:
+        return _detail_redirect(target_id, f"Could not combine: {err}", "error", tab="periods")
+
+    now = timeutil.now_iso()
+    db["subscriptions"].update(source_id, {
+        "deleted_at": now, "deleted_by": ctx.user["id"], "updated_at": now,
+    })
+    desc = (f"Combined '{source['name']}' (#{source_id}) into '{target['name']}' "
+            f"(#{target_id}): moved {plural(moved, 'period')}")
+    if note:
+        desc += f" — {note}"
+    audit(ctx, "COMBINE", "subscription", target_id, target["name"], desc,
+          new_values={"merged_from": source["name"], "merged_from_id": source_id,
+                      "periods_moved": moved})
+    audit(ctx, "DELETE", "subscription", source_id, source["name"],
+          f"Combined into '{target['name']}' (#{target_id}) and soft-deleted",
+          new_values={"deleted_at": now, "merged_into_id": target_id})
+    return _detail_redirect(target_id, desc + ".", "success", tab="periods")
 
 
 # ── Soft-delete a subscription ───────────────────────────────────────────────

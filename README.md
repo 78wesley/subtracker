@@ -9,15 +9,29 @@ log, and CSV/JSON import-export — all server-rendered, no JavaScript build ste
 
 ## Features
 
-- **Spend dashboard** — historical spend for any calendar year (prorated over each
-  subscription's active windows and price changes), current run-rate, year-over-year
+- **Spend dashboard** — what you actually pay this month vs last month (real billing
+  dates, plus what is still due), historical spend for any calendar year (prorated over
+  each subscription's active windows and price changes), current run-rate, year-over-year
   delta, per-period cost cards, and bar/breakdown charts by subscription, category,
-  and billing frequency.
+  and billing frequency. Every chart mark shows its exact value on hover; click or tap
+  one to pin the tooltip.
+- **Subscription detail** — a summary header (status, current price, next payment)
+  over four tabs: Overview (details, cost per period, next payments), Spend (monthly
+  chart and lifetime figures), Periods (price history + add a period), and History
+  (audit trail). Tabs are plain links (`?tab=…`), so they deep-link and survive reloads.
 - **Flexible cadences** — daily / weekly / monthly / quarterly / yearly presets,
   plus a `custom` "every N units" option.
 - **Price periods** — each subscription owns one or more dated, non-overlapping
   active windows, each with its own price; the dashboard and next-payment forecast
-  honour them exactly.
+  honour them exactly. Periods that run back to back are one continuous subscription,
+  so a price change keeps the original billing day; a gap between periods (cancelled,
+  then resubscribed) starts a new billing cycle on the new start date.
+- **Combine duplicates** — fold one subscription into another: its periods move
+  across (keeping who added them and when) and an open-ended period is closed the day
+  before the next one starts, then the duplicate is soft-deleted. Import offers this
+  whenever a file brings a name the team already uses — the usual case being newer
+  prices for a subscription whose current period is still open — and the detail page
+  offers it for any same-named leftovers.
 - **Multi-tenant** — subscriptions are owned by a team; users switch between the
   teams they belong to, and a super-admin can view across all teams at once.
 - **RBAC** — a global role axis (`super_admin`) and a per-team role axis

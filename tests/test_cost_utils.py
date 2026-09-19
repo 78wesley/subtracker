@@ -78,6 +78,89 @@ def test_next_payment_clamps_end_of_month():
     assert nxt == date(2024, 2, 29)
 
 
+def _step_by_step(start: str, frequency: str, interval: int, base_unit, reference: date):
+    """The naive walk next_payment_date short-circuits — the reference behaviour."""
+    unit, n = cu.resolve(frequency, interval, base_unit)
+    d = date.fromisoformat(start)
+    while d < reference:
+        d = cu._advance(d, unit, n)
+    return d
+
+
+@pytest.mark.parametrize("start,frequency,interval,base_unit,reference", [
+    ("2015-02-01", "daily",     1, None,      date(2026, 9, 19)),   # thousands of steps
+    ("2015-01-31", "daily",     1, None,      date(2026, 9, 19)),   # month-end anchor
+    ("2015-03-15", "weekly",    1, None,      date(2026, 9, 19)),
+    ("2015-01-31", "monthly",   1, None,      date(2026, 9, 19)),   # clamps to the 28th
+    ("2015-01-30", "monthly",   1, None,      date(2026, 3, 1)),
+    ("2015-06-15", "quarterly", 1, None,      date(2026, 9, 19)),
+    ("2016-02-29", "yearly",    1, None,      date(2026, 9, 19)),   # leap-day anchor
+    ("2015-01-05", "custom",    7, "monthly", date(2026, 9, 19)),
+    ("2015-01-05", "custom",    3, "weekly",  date(2026, 9, 19)),
+])
+def test_next_payment_jump_matches_the_step_by_step_walk(start, frequency, interval,
+                                                         base_unit, reference):
+    # next_payment_date skips most of the cadence in one jump; the result must be
+    # identical to advancing one period at a time (month-end clamping included).
+    assert (cu.next_payment_date(start, frequency, interval, base_unit, reference)
+            == _step_by_step(start, frequency, interval, base_unit, reference))
+
+
+# ── upcoming_payments_for_periods / billing-cycle anchoring ──────────────────
+
+_MONTHLY = {"frequency": "monthly", "interval": 1, "base_unit": None}
+
+
+def test_price_change_keeps_the_original_billing_day():
+    # Recorded as a price change: the old period is closed the day before the new
+    # one starts. Billing stays on the 20th — it must not move to the 16th.
+    periods = [{"amount": 9.99, "start_date": "2026-01-20", "end_date": "2026-06-15"},
+               {"amount": 15.99, "start_date": "2026-06-16", "end_date": None}]
+    pays = cu.upcoming_payments_for_periods(_MONTHLY, periods, count=3,
+                                            reference=date(2026, 9, 1))
+    assert [p["date"] for p in pays] == [date(2026, 9, 20), date(2026, 10, 20),
+                                         date(2026, 11, 20)]
+    assert {p["amount"] for p in pays} == {15.99}
+
+
+def test_price_change_mid_month_is_not_billed_twice():
+    # Bills on the 2nd; the price is raised from the 4th of May. May owes exactly one
+    # payment (on the 2nd, still at the old price) — not one per period.
+    periods = [{"amount": 59.80, "start_date": "2026-01-02", "end_date": "2026-03-31"},
+               {"amount": 55.81, "start_date": "2026-04-01", "end_date": "2026-05-03"},
+               {"amount": 54.44, "start_date": "2026-05-04", "end_date": None}]
+    pays = cu.upcoming_payments_for_periods(_MONTHLY, periods, count=3,
+                                            reference=date(2026, 5, 1))
+    assert [(p["date"].isoformat(), p["amount"]) for p in pays] == [
+        ("2026-05-02", 55.81), ("2026-06-02", 54.44), ("2026-07-02", 54.44)]
+
+
+def test_the_period_covering_the_billing_date_sets_the_price():
+    periods = [{"amount": 10.0, "start_date": "2026-01-10", "end_date": "2026-03-09"},
+               {"amount": 20.0, "start_date": "2026-03-10", "end_date": None}]
+    pays = cu.upcoming_payments_for_periods(_MONTHLY, periods, count=4,
+                                            reference=date(2026, 2, 1))
+    assert [(p["date"].isoformat(), p["amount"]) for p in pays] == [
+        ("2026-02-10", 10.0), ("2026-03-10", 20.0),
+        ("2026-04-10", 20.0), ("2026-05-10", 20.0)]
+
+
+def test_a_gap_between_periods_restarts_the_cycle():
+    # Cancelled in March, resubscribed in September on a new day: the cycle restarts.
+    periods = [{"amount": 10.0, "start_date": "2026-01-12", "end_date": "2026-03-11"},
+               {"amount": 10.0, "start_date": "2026-09-25", "end_date": None}]
+    pays = cu.upcoming_payments_for_periods(_MONTHLY, periods, count=2,
+                                            reference=date(2026, 9, 1))
+    assert [p["date"] for p in pays] == [date(2026, 9, 25), date(2026, 10, 25)]
+
+
+def test_cycle_anchors_follow_contiguity():
+    periods = [{"amount": 1, "start_date": "2026-01-05", "end_date": "2026-02-04"},
+               {"amount": 2, "start_date": "2026-02-05", "end_date": "2026-03-31"},
+               {"amount": 3, "start_date": "2026-06-01", "end_date": None}]
+    assert cu.cycle_anchors(periods) == ["2026-01-05", "2026-01-05", "2026-06-01"]
+
+
 # ── range_cost ───────────────────────────────────────────────────────────────
 
 def test_range_cost_daily_is_exact_over_window():

@@ -118,6 +118,9 @@ def _advance(d: date, unit: str, n: int) -> date:
     raise ValueError(f"Unknown unit: {unit}")
 
 
+_UNIT_MONTHS = {"monthly": 1, "quarterly": 3, "yearly": 12}
+
+
 def next_payment_date(start_date_str: str, frequency: str, interval: int,
                       base_unit: str | None = None, reference: date | None = None) -> date:
     """Return the next payment date >= reference (defaults to today)."""
@@ -126,28 +129,75 @@ def next_payment_date(start_date_str: str, frequency: str, interval: int,
     d = date.fromisoformat(start_date_str)
     if d >= ref:
         return d
+
+    # Skip most of the cadence in one jump rather than stepping period by period:
+    # a daily subscription running since 2015 is thousands of steps from today, and
+    # callers walk a whole month of payments this way.
+    # Month-family anchors on day 29-31 are stepped the slow way: month-end clamping
+    # makes the sequence non-arithmetic (Jan 31 → Feb 28 → Mar 28 …), so one big jump
+    # would land on a different date than repeated stepping. Day-/week-based cadences
+    # are plain timedeltas and always jump.
+    gap = (ref - d).days
+    jumps = 0
+    if unit in ("daily", "weekly"):
+        jumps = gap // ((1 if unit == "daily" else 7) * n)
+    elif d.day <= 28:
+        # 31 days per month deliberately under-counts the months in `gap`, so the
+        # jump can never overshoot `ref`; the loop below closes the last steps.
+        jumps = gap // (31 * _UNIT_MONTHS[unit] * n)
+    if jumps:
+        d = _advance(d, unit, jumps * n)
+
     while d < ref:
         d = _advance(d, unit, n)
     return d
+
+
+def cycle_anchors(periods_sorted: list) -> list:
+    """
+    The date each period's billing cycle is counted from, one per period.
+
+    A price change is recorded by closing the running period and opening a new one
+    the very next day, so *contiguous* periods are one continuous subscription and
+    keep billing on their original day — changing the price must not move the
+    billing date. A gap between periods means the subscription actually stopped and
+    was restarted later, which does begin a new cycle on the new start date.
+    """
+    anchors: list = []
+    for i, p in enumerate(periods_sorted):
+        if i == 0:
+            anchors.append(p["start_date"])
+            continue
+        prev_end = periods_sorted[i - 1].get("end_date")
+        resumed_next_day = (
+            prev_end is not None
+            and date.fromisoformat(p["start_date"]) == date.fromisoformat(prev_end)
+                                                        + timedelta(days=1))
+        anchors.append(anchors[i - 1] if resumed_next_day else p["start_date"])
+    return anchors
 
 
 def upcoming_payments_for_periods(sub: dict, periods: list, count: int = 6,
                                   reference: date | None = None) -> list:
     """
     Return up to `count` upcoming [{date, amount}] payments at/after `reference`,
-    walking each period's cadence (anchored at its start) and clamped to its end.
+    walking each period's cadence (anchored at its cycle start, see cycle_anchors)
+    and clamped to the period's own window.
     """
     ref = reference or date.today()
     out: list = []
     freq, interval, base_unit = sub["frequency"], sub.get("interval") or 1, sub.get("base_unit")
-    for p in sorted(periods, key=lambda x: x["start_date"]):
+    periods_sorted = sorted(periods, key=lambda x: x["start_date"])
+    anchors = cycle_anchors(periods_sorted)
+    for anchor, p in zip(anchors, periods_sorted):
         pe = date.fromisoformat(p["end_date"]) if p.get("end_date") else None
-        anchor = max(ref, date.fromisoformat(p["start_date"]))
-        d = next_payment_date(p["start_date"], freq, interval, base_unit, anchor)
+        # Payments are dated from the cycle anchor but only count while they fall
+        # inside this period — that is what picks up the period's price.
+        first = max(ref, date.fromisoformat(p["start_date"]))
+        d = next_payment_date(anchor, freq, interval, base_unit, first)
         while (pe is None or d <= pe) and len(out) < count:
             out.append({"date": d, "amount": p["amount"]})
-            d = next_payment_date(p["start_date"], freq, interval, base_unit,
-                                  d + timedelta(days=1))
+            d = next_payment_date(anchor, freq, interval, base_unit, d + timedelta(days=1))
         if len(out) >= count:
             break
     return out

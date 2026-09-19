@@ -76,6 +76,24 @@ GLOBALS = """
   .dark .theme-icon-light { display: none; }
 }
 
+/* Chart marks (app/components/charts.py + CHART_JS): keyboard focus ring, and the
+   highlighted state of the mark whose tooltip is pinned. */
+.chart-hit:focus { outline: none; }
+.chart-hit:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+svg .chart-hit.chart-pinned .chart-mark {
+  fill: hsl(var(--primary) / 0.75);
+  stroke: hsl(var(--ring));
+  stroke-width: 1.5;
+}
+div.chart-hit.chart-pinned { background-color: hsl(var(--muted)); }
+
+/* Disclosure toggle (app/components/widgets.py): flip the chevron when open. */
+details[data-disclosure][open] > summary svg { transform: rotate(180deg); }
+
 /* shadcn DropdownMenu (built on <details>): open animation + trigger chevron flip. */
 details[data-dropdown][open] > summary svg { transform: rotate(180deg); }
 details[data-dropdown] > [role="menu"] { animation: dropdown-in 0.12s ease-out; }
@@ -134,8 +152,10 @@ _BADGE_VARIANT = {
     "role":      "border-transparent bg-secondary text-secondary-foreground",
     "outline":   "text-foreground",
     "active":    "border-transparent bg-success/15 text-success",
+    "success":   "border-transparent bg-success/15 text-success",
     "inactive":  "border-transparent bg-destructive/10 text-destructive",
     "warn":      "border-transparent bg-warning/15 text-warning",
+    "warning":   "border-transparent bg-warning/15 text-warning",
     "info":      "border-transparent bg-info/15 text-info",
 }
 

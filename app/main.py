@@ -130,6 +130,91 @@ window.addEventListener('scroll', repositionOpen, true);
 window.addEventListener('resize', repositionOpen);
 """
 
+# Chart tooltips: every mark rendered by app/components/charts.py carries
+# data-tip-label / data-tip-value / data-tip-note. Hovering (or focusing) a mark
+# shows a floating card near it; clicking or tapping pins the card until the next
+# click elsewhere or Escape, so touch users and "let me read that number" both work.
+CHART_JS = """
+(function () {
+  var tip = null, pinned = null;
+
+  function node() {
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'pointer-events-none fixed z-[70] hidden max-w-[16rem] rounded-md ' +
+        'border bg-popover px-3 py-2 text-popover-foreground shadow-md';
+      tip.setAttribute('role', 'tooltip');
+      document.body.appendChild(tip);
+    }
+    return tip;
+  }
+  function line(text, cls) {
+    var d = document.createElement('div');
+    d.className = cls; d.textContent = text; return d;
+  }
+  function render(t) {
+    var e = node();
+    e.replaceChildren(
+      line(t.getAttribute('data-tip-label') || '', 'text-xs text-muted-foreground'),
+      line(t.getAttribute('data-tip-value') || '', 'text-sm font-semibold tabular-nums'));
+    var note = t.getAttribute('data-tip-note');
+    if (note) e.appendChild(line(note, 'text-xs text-muted-foreground mt-0.5'));
+    e.classList.remove('hidden');
+  }
+  // Clamp inside the viewport; `center` anchors above an element, otherwise the
+  // card trails the cursor.
+  function place(x, y, center) {
+    var e = node(), pad = 8, w = e.offsetWidth, h = e.offsetHeight;
+    var vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
+    var left = center ? x - w / 2 : x + 14;
+    e.style.left = Math.max(pad, Math.min(left, vw - pad - w)) + 'px';
+    var top = y - h - 12;
+    if (top < pad) top = Math.min(y + 20, vh - pad - h);
+    e.style.top = top + 'px';
+  }
+  function placeOn(t) {
+    var r = t.getBoundingClientRect();
+    place(r.left + r.width / 2, r.top, true);
+  }
+  function hide() { if (tip) tip.classList.add('hidden'); }
+  function unpin() {
+    if (pinned) pinned.classList.remove('chart-pinned');
+    pinned = null; hide();
+  }
+  function markOf(ev) {
+    var el = ev.target;
+    return (el && el.closest) ? el.closest('[data-tip-label]') : null;
+  }
+
+  document.addEventListener('mousemove', function (ev) {
+    if (pinned) return;
+    var t = markOf(ev);
+    if (!t) { hide(); return; }
+    render(t); place(ev.clientX, ev.clientY, false);
+  });
+  document.addEventListener('click', function (ev) {
+    var t = markOf(ev);
+    if (!t || t === pinned) { unpin(); return; }
+    unpin();
+    pinned = t;
+    t.classList.add('chart-pinned');
+    render(t); placeOn(t);
+  });
+  document.addEventListener('focusin', function (ev) {
+    var t = markOf(ev);
+    if (!t || pinned) return;
+    render(t); placeOn(t);
+  });
+  document.addEventListener('focusout', function () { if (!pinned) hide(); });
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape') unpin(); });
+  window.addEventListener('scroll', function () {
+    if (pinned) placeOn(pinned); else hide();
+  }, true);
+  window.addEventListener('resize', function () { if (pinned) placeOn(pinned); else hide(); });
+})();
+"""
+
+
 app, rt = fast_app(
     secret_key=SECRET_KEY,
     pico=False,
@@ -144,6 +229,7 @@ app, rt = fast_app(
         Script(src="https://cdn.tailwindcss.com"),
         Script(TAILWIND_CONFIG),
         Script(DROPDOWN_JS),
+        Script(CHART_JS),
         CSRF_JS,
         Style(GLOBALS, type="text/tailwindcss"),
     ),
