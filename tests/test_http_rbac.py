@@ -62,3 +62,27 @@ def test_viewer_cannot_reach_admin_or_users_pages(client, db, team):
     login(client, "vi", "password123")
     assert "not authorized" in client.get("/admin/deleted").text.lower()
     assert "not authorized" in client.get("/users").text.lower()
+
+
+def test_viewer_detail_page_has_no_history_tab_or_period_form(client, db, team):
+    """A viewer sees the read-only tabs only; ?tab=history falls back to Overview."""
+    from app.db import add_period, get_db
+    owner = db["users"].get(1)["id"]
+    sub_id = db["subscriptions"].insert({
+        "team_id": team, "created_by": owner, "name": "Netflix", "currency": "EUR",
+        "frequency": "monthly", "interval": 1, "created_at": "2026-01-01T00:00:00",
+        "updated_at": "2026-01-01T00:00:00"}).last_pk
+    add_period(get_db(), sub_id, 12.99, "2026-01-01", None, owner)
+
+    _member(db, team, "vi", "viewer")
+    login(client, "vi", "password123")
+
+    overview = client.get(f"/subscriptions/{sub_id}/detail")
+    assert overview.status_code == 200
+    assert "?tab=history" not in overview.text
+    assert "Next expected payments" in overview.text
+
+    periods = client.get(f"/subscriptions/{sub_id}/detail?tab=periods").text
+    assert "Add a period" not in periods              # no edit rights
+    assert "Next expected payments" in client.get(
+        f"/subscriptions/{sub_id}/detail?tab=history").text   # falls back
