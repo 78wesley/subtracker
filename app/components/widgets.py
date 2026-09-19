@@ -134,6 +134,25 @@ def action_menu(sub_id: int, name: str, *, can_edit: bool = True,
     return dropdown_menu("Actions", *items)
 
 
+_DISCLOSURE_SUMMARY = ("inline-flex items-center gap-1.5 cursor-pointer select-none "
+                       "text-sm text-muted-foreground hover:text-foreground "
+                       "transition-colors list-none marker:hidden "
+                       "[&::-webkit-details-marker]:hidden")
+
+
+def disclosure(label: str, *children, open_: bool = False) -> Details:
+    """A plain show/hide toggle: a chevron summary over hidden content.
+
+    Native <details>, so it needs no JS; the chevron flip lives in GLOBALS, scoped
+    to `details[data-disclosure]`."""
+    return Details(
+        Summary(label, _CHEVRON, cls=_DISCLOSURE_SUMMARY),
+        Div(*children, cls="mt-2"),
+        data_disclosure=True,
+        **({"open": True} if open_ else {}),
+    )
+
+
 def pagination_bar(page: int, total_pages: int, base_url: str) -> Div:
     sep = "&" if "?" in base_url else "?"
     prev_btn = (A("← Prev", href=f"{base_url}{sep}page={page-1}", role="button",
