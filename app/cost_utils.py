@@ -118,6 +118,9 @@ def _advance(d: date, unit: str, n: int) -> date:
     raise ValueError(f"Unknown unit: {unit}")
 
 
+_UNIT_MONTHS = {"monthly": 1, "quarterly": 3, "yearly": 12}
+
+
 def next_payment_date(start_date_str: str, frequency: str, interval: int,
                       base_unit: str | None = None, reference: date | None = None) -> date:
     """Return the next payment date >= reference (defaults to today)."""
@@ -126,6 +129,25 @@ def next_payment_date(start_date_str: str, frequency: str, interval: int,
     d = date.fromisoformat(start_date_str)
     if d >= ref:
         return d
+
+    # Skip most of the cadence in one jump rather than stepping period by period:
+    # a daily subscription running since 2015 is thousands of steps from today, and
+    # callers walk a whole month of payments this way.
+    # Month-family anchors on day 29-31 are stepped the slow way: month-end clamping
+    # makes the sequence non-arithmetic (Jan 31 → Feb 28 → Mar 28 …), so one big jump
+    # would land on a different date than repeated stepping. Day-/week-based cadences
+    # are plain timedeltas and always jump.
+    gap = (ref - d).days
+    jumps = 0
+    if unit in ("daily", "weekly"):
+        jumps = gap // ((1 if unit == "daily" else 7) * n)
+    elif d.day <= 28:
+        # 31 days per month deliberately under-counts the months in `gap`, so the
+        # jump can never overshoot `ref`; the loop below closes the last steps.
+        jumps = gap // (31 * _UNIT_MONTHS[unit] * n)
+    if jumps:
+        d = _advance(d, unit, jumps * n)
+
     while d < ref:
         d = _advance(d, unit, n)
     return d

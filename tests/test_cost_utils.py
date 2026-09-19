@@ -78,6 +78,34 @@ def test_next_payment_clamps_end_of_month():
     assert nxt == date(2024, 2, 29)
 
 
+def _step_by_step(start: str, frequency: str, interval: int, base_unit, reference: date):
+    """The naive walk next_payment_date short-circuits — the reference behaviour."""
+    unit, n = cu.resolve(frequency, interval, base_unit)
+    d = date.fromisoformat(start)
+    while d < reference:
+        d = cu._advance(d, unit, n)
+    return d
+
+
+@pytest.mark.parametrize("start,frequency,interval,base_unit,reference", [
+    ("2015-02-01", "daily",     1, None,      date(2026, 9, 19)),   # thousands of steps
+    ("2015-01-31", "daily",     1, None,      date(2026, 9, 19)),   # month-end anchor
+    ("2015-03-15", "weekly",    1, None,      date(2026, 9, 19)),
+    ("2015-01-31", "monthly",   1, None,      date(2026, 9, 19)),   # clamps to the 28th
+    ("2015-01-30", "monthly",   1, None,      date(2026, 3, 1)),
+    ("2015-06-15", "quarterly", 1, None,      date(2026, 9, 19)),
+    ("2016-02-29", "yearly",    1, None,      date(2026, 9, 19)),   # leap-day anchor
+    ("2015-01-05", "custom",    7, "monthly", date(2026, 9, 19)),
+    ("2015-01-05", "custom",    3, "weekly",  date(2026, 9, 19)),
+])
+def test_next_payment_jump_matches_the_step_by_step_walk(start, frequency, interval,
+                                                         base_unit, reference):
+    # next_payment_date skips most of the cadence in one jump; the result must be
+    # identical to advancing one period at a time (month-end clamping included).
+    assert (cu.next_payment_date(start, frequency, interval, base_unit, reference)
+            == _step_by_step(start, frequency, interval, base_unit, reference))
+
+
 # ── range_cost ───────────────────────────────────────────────────────────────
 
 def test_range_cost_daily_is_exact_over_window():
