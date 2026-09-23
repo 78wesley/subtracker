@@ -182,8 +182,8 @@ Username + password; `LOGIN` / `LOGOUT` written to the audit log.
 
 ### Dashboard — `/dashboard?year=YYYY`
 Two lenses over the active team (or all teams for a super-admin in view-all mode):
-- **Historical** — what the selected **calendar year** actually cost, prorating every
-  subscription over its active days and price changes. Headline total with a
+- **Historical** — what the selected **calendar year** actually cost: every payment charged
+  in it, on its real billing date and at the price of the period it falls in. Headline total with a
   **year-over-year** delta badge, plus per-period cost cards (daily/weekly/monthly/quarterly/yearly).
 - **Run-rate** — what is being paid *right now*: subscriptions active today at today's
   price, annualised ("what's my ongoing commitment").
@@ -237,8 +237,8 @@ row-capped, tolerate a UTF-8 BOM, and neutralise CSV formula injection on both e
 1. **Activity & price are derived, never stored as a flag** — a subscription is active on a
    date iff a period covers it; the current price is the covering period's amount.
 2. **Non-overlapping periods** — adding a period auto-closes the prior open-ended one.
-3. **Historical dashboard** prorates each period across the days it overlaps the selected year,
-   so price changes mid-year are reflected proportionally.
+3. **Historical dashboard** sums the payments actually charged in the selected year (by billing
+   date, at the covering period's price), so each monthly bar equals that month's billing total.
 4. **Run-rate** counts only subscriptions active today, at today's price.
 5. **Cadence**: `interval ≥ 1` always; named presets force `interval = 1` and no `base_unit`.
 6. **Currency** is stored (EUR) but never converted.

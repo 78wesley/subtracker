@@ -5,8 +5,9 @@ cost cards, charts.
 Three distinct lenses are surfaced:
   • Billing    — what is actually charged this calendar month vs the previous one,
     walking each subscription's real payment dates (what lands on the card).
-  • Historical — what the selected calendar year actually cost, prorating each
-    subscription over the days it was active (period + price aware).
+  • Historical — what the selected calendar year actually cost: every payment
+    charged in it, by real billing date and at the price of the period it falls in.
+    The monthly bars therefore match the billing card for the same month.
   • Run-rate   — what is being paid right now: currently-active subscriptions at
     today's price, annualised. Answers "what's my ongoing commitment".
 """
@@ -34,9 +35,7 @@ from app.components import (
 from app.cost_utils import (
     frequency_label,
     get_annual_cost,
-    monthly_costs_for_year,
-    upcoming_payments_for_periods,
-    year_cost,
+    payments_between,
 )
 from app.db import (
     current_price,
@@ -60,17 +59,16 @@ from app.styles import (
 
 ar = APIRouter()
 
-# Payments generated per subscription per month window. A daily subscription bills at
-# most 31 times in a month; the walk stops at the window's end either way.
-_MAX_MONTH_PAYMENTS = 70
-
 
 def _year_analytics(subs: list, periods_map: dict, year: int) -> dict:
     """
-    Spend analytics for `year`, honouring price history and each subscription's
-    active windows, plus current run-rate and a year-over-year comparison.
+    Spend analytics for `year` from the payments actually charged in it (price
+    history and active windows included), plus current run-rate and a
+    year-over-year comparison. `month_counts` counts payments per month.
     """
     today = timeutil.today_iso()
+    year_start, year_end = date(year, 1, 1), date(year, 12, 31)
+    prev_start, prev_end = date(year - 1, 1, 1), date(year - 1, 12, 31)
 
     per_sub, per_cat, per_freq = [], {}, {}
     months, month_counts = [0.0] * 12, [0] * 12
@@ -88,11 +86,14 @@ def _year_analytics(subs: list, periods_map: dict, year: int) -> dict:
                 run_rate_annual += get_annual_cost(
                     price, s["frequency"], s.get("interval") or 1, s.get("base_unit"))
 
-        # One pass over each subscription's periods yields both the prior-year total
-        # (for the YoY delta) and this year's 12 monthly costs; the year total is just
-        # their sum, so it stays consistent with the bars and needs no extra walk.
-        prev_total += year_cost(s, periods, year - 1)
-        sub_months = monthly_costs_for_year(s, periods, year)
+        # The year total is the sum of this year's monthly payments, so it stays
+        # consistent with the bars; the prior year feeds the YoY delta.
+        prev_total += sum(pay["amount"] for pay in
+                          payments_between(s, periods, prev_start, prev_end))
+        sub_months, sub_counts = [0.0] * 12, [0] * 12
+        for pay in payments_between(s, periods, year_start, year_end):
+            sub_months[pay["date"].month - 1] += pay["amount"]
+            sub_counts[pay["date"].month - 1] += 1
         sub_year = round(sum(sub_months), 2)
         if sub_year <= 0:
             continue
@@ -103,10 +104,9 @@ def _year_analytics(subs: list, periods_map: dict, year: int) -> dict:
                                  s.get("interval") or 1, s.get("base_unit"))
         per_freq[flabel] = round(per_freq.get(flabel, 0.0) + sub_year, 2)
         yearly_total += sub_year
-        for i, m in enumerate(sub_months):
-            months[i] += m
-            if m > 0:
-                month_counts[i] += 1
+        for i in range(12):
+            months[i] += sub_months[i]
+            month_counts[i] += sub_counts[i]
 
     prev_total = round(prev_total, 2)
     yearly_total = round(yearly_total, 2)
@@ -162,10 +162,7 @@ def _charges_in_month(subs: list, periods_map: dict, any_day: date) -> list:
     charges = []
     for s in subs:
         periods = periods_map.get(s["id"], [])
-        for pay in upcoming_payments_for_periods(s, periods,
-                                                 count=_MAX_MONTH_PAYMENTS, reference=start):
-            if pay["date"] > end:
-                break
+        for pay in payments_between(s, periods, start, end):
             charges.append({"date": pay["date"], "amount": pay["amount"], "name": s["name"]})
     charges.sort(key=lambda c: (c["date"], c["name"]))
     return charges
@@ -348,7 +345,7 @@ def get(req, session, year: int = None):
         heading=f"Monthly spend in {year}",
         *[bar_chart(MONTH_LABELS, data["months"],
                     tip_labels=[f"{calendar.month_name[m + 1]} {year}" for m in range(12)],
-                    notes=[plural(c, "subscription") for c in data["month_counts"]]),
+                    notes=[plural(c, "payment") for c in data["month_counts"]]),
           P("Hover a bar for the exact amount — click to keep it open.", cls=MUTED_SM)],
     )
 

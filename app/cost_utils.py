@@ -178,11 +178,12 @@ def cycle_anchors(periods_sorted: list) -> list:
 
 
 def upcoming_payments_for_periods(sub: dict, periods: list, count: int = 6,
-                                  reference: date | None = None) -> list:
+                                  reference: date | None = None,
+                                  until: date | None = None) -> list:
     """
-    Return up to `count` upcoming [{date, amount}] payments at/after `reference`,
-    walking each period's cadence (anchored at its cycle start, see cycle_anchors)
-    and clamped to the period's own window.
+    Return up to `count` upcoming [{date, amount}] payments at/after `reference`
+    (and on/before `until`, when given), walking each period's cadence (anchored at
+    its cycle start, see cycle_anchors) and clamped to the period's own window.
     """
     ref = reference or date.today()
     out: list = []
@@ -191,6 +192,8 @@ def upcoming_payments_for_periods(sub: dict, periods: list, count: int = 6,
     anchors = cycle_anchors(periods_sorted)
     for anchor, p in zip(anchors, periods_sorted):
         pe = date.fromisoformat(p["end_date"]) if p.get("end_date") else None
+        if until is not None:
+            pe = min(pe, until) if pe else until
         # Payments are dated from the cycle anchor but only count while they fall
         # inside this period — that is what picks up the period's price.
         first = max(ref, date.fromisoformat(p["start_date"]))
@@ -201,6 +204,13 @@ def upcoming_payments_for_periods(sub: dict, periods: list, count: int = 6,
         if len(out) >= count:
             break
     return out
+
+
+def payments_between(sub: dict, periods: list, start: date, end: date) -> list:
+    """Every [{date, amount}] payment charged within the inclusive [start, end] window."""
+    # Daily is the finest cadence, so a window can hold at most one payment per day.
+    return upcoming_payments_for_periods(sub, periods, count=(end - start).days + 1,
+                                         reference=start, until=end)
 
 
 # ── Range-aware cost (sums per-period prorated cost over a window) ────────────
@@ -220,9 +230,10 @@ def range_cost(sub: dict, periods: list, range_start: date, range_end: date) -> 
         if window_start > window_end:
             continue
         days = (window_end - window_start).days + 1
-        daily = get_period_cost(p["amount"], sub["frequency"],
-                                sub.get("interval") or 1, sub.get("base_unit"), "daily")
-        total += daily * days
+        # Keep the daily rate unrounded: rounding it to cents first and then
+        # multiplying by the day count compounds the error (≈7% a year on a €1.99/mo sub).
+        unit, n = resolve(sub["frequency"], sub.get("interval") or 1, sub.get("base_unit"))
+        total += p["amount"] / (DAYS_PER_UNIT[unit] * n) * days
     return round(total, 2)
 
 

@@ -8,7 +8,7 @@ year-cost maths covered in test_cost_utils.
 
 from datetime import date
 
-from app.routes.dashboard import _charges_in_month, _month_billing
+from app.routes.dashboard import _charges_in_month, _month_billing, _year_analytics
 from tests.conftest import post, setup_first_admin
 
 TODAY = date(2026, 9, 19)
@@ -85,6 +85,22 @@ def test_month_billing_rolls_over_january_to_december():
     b = _month_billing(subs, pm, date(2026, 1, 15))
     assert (b["this_label"], b["prev_label"]) == ("January 2026", "December 2025")
     assert (b["this_total"], b["prev_total"]) == (12.0, 12.0)
+
+
+def test_year_bars_match_the_billing_card_for_each_month():
+    # A yearly renewal and a mid-month start: prorating would spread / shrink both,
+    # but the bar must show what is actually charged, like the month card does.
+    subs = [_sub(1, "Yearly", "yearly"), _sub(2, "Mortgage"), _sub(3, "Netflix")]
+    pm = {1: [_period(159.13, "2025-09-11")],
+          2: [_period(1184.03, "2026-09-12")],
+          3: [_period(10.0, "2026-01-20", "2026-09-19"), _period(15.0, "2026-09-20")]}
+    data = _year_analytics(subs, pm, 2026)
+    b = _month_billing(subs, pm, TODAY)
+    assert data["months"][8] == b["this_total"] == 1358.16
+    assert data["month_counts"][8] == b["this_count"] == 3
+    assert data["months"][7] == b["prev_total"] == 10.0
+    assert data["yearly_total"] == round(sum(data["months"]), 2)
+    assert data["prev_total"] == 159.13     # 2025: only the yearly renewal
 
 
 # ── rendering ────────────────────────────────────────────────────────────────

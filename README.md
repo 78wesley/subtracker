@@ -10,8 +10,9 @@ log, and CSV/JSON import-export — all server-rendered, no JavaScript build ste
 ## Features
 
 - **Spend dashboard** — what you actually pay this month vs last month (real billing
-  dates, plus what is still due), historical spend for any calendar year (prorated over
-  each subscription's active windows and price changes), current run-rate, year-over-year
+  dates, plus what is still due), historical spend for any calendar year (every payment
+  actually charged, at the price in effect on its billing date — each monthly bar matches
+  the "this month" figure for that month), current run-rate, year-over-year
   delta, per-period cost cards, and bar/breakdown charts by subscription, category,
   and billing frequency. Every chart mark shows its exact value on hover; click or tap
   one to pin the tooltip.

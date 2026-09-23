@@ -187,6 +187,13 @@ def test_range_cost_ignores_periods_outside_window():
     assert cu.range_cost(sub, periods, date(2024, 1, 1), date(2024, 1, 10)) == 0.0
 
 
+def test_range_cost_does_not_compound_a_rounded_daily_rate():
+    # €1.99/month is €0.0654/day; rounding that to €0.07 first overstated a year by ~7%.
+    sub = {"frequency": "monthly", "interval": 1, "base_unit": None}
+    periods = [{"amount": 1.99, "start_date": "2026-01-01", "end_date": None}]
+    assert cu.year_cost(sub, periods, 2026) == pytest.approx(1.99 * 12 * 365 / 365.25, abs=0.01)
+
+
 # ── upcoming_payments_for_periods ────────────────────────────────────────────
 
 def test_upcoming_payments_respects_count_and_amount():
@@ -197,3 +204,16 @@ def test_upcoming_payments_respects_count_and_amount():
     assert [p["date"] for p in out] == [
         date(2024, 1, 10), date(2024, 2, 10), date(2024, 3, 10)]
     assert all(p["amount"] == 9.99 for p in out)
+
+
+def test_payments_between_is_bounded_by_the_window():
+    sub = {"frequency": "monthly", "interval": 1, "base_unit": None}
+    periods = [{"amount": 9.99, "start_date": "2024-01-10", "end_date": None}]
+    out = cu.payments_between(sub, periods, date(2024, 2, 1), date(2024, 4, 9))
+    assert [p["date"] for p in out] == [date(2024, 2, 10), date(2024, 3, 10)]
+
+
+def test_payments_between_covers_a_whole_year_of_daily_billing():
+    sub = {"frequency": "daily", "interval": 1, "base_unit": None}
+    periods = [{"amount": 1.0, "start_date": "2020-01-01", "end_date": None}]
+    assert len(cu.payments_between(sub, periods, date(2024, 1, 1), date(2024, 12, 31))) == 366
