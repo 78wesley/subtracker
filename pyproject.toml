@@ -1,6 +1,6 @@
 [project]
 name = "subtracker"
-version = "0.3.0"
+version = "0.3.1"
 description = "SubTracker — a multi-tenant subscription cost tracker built with FastHTML."
 readme = "README.md"
 requires-python = ">=3.13"
