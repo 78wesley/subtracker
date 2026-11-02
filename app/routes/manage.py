@@ -36,7 +36,7 @@ from app.permissions import Perm
 from app.styles import CONTROL, PAGE_HEADER, TABLE, btn
 
 _FF = "grid gap-1.5 text-sm font-medium"  # filter field (label + control)
-_PER_PAGE = 20  # subscriptions per page in the manage list
+_PER_PAGE = 100  # subscriptions per page in the manage list
 
 # lucide arrow-up-right — signals the name links through to the detail page.
 _OPEN_ICON = NotStr(
@@ -141,7 +141,7 @@ def get(req, session, q: str = "", status: str = "all", category: str = "", page
 
     actions = [Button("Filter", type="submit", cls=btn("outline"))]
     if can_create:
-        actions.append(A("＋ Add", href="/manage/new", role="button", cls=btn("outline")))
+        actions.append(A("＋ Add", href="/manage/new", role="button", cls=btn("secondary")))
 
     filter_bar = Form(
         Div(
@@ -164,7 +164,7 @@ def get(req, session, q: str = "", status: str = "all", category: str = "", page
 
     return page_title("Manage"), nav_bar(ctx, "manage"), Main(
         Div(H2("Manage Subscriptions"),
-            A("Import / Export", href="/import", role="button", cls=btn("outline")),
+            A("Import / Export", href="/import", role="button", cls=btn("secondary")),
             cls=PAGE_HEADER),
         filter_bar,
         table,
