@@ -114,6 +114,38 @@ def select_menu(name: str, options, *, value=None, width: str = "w-[160px]",
     )
 
 
+# shadcn ToggleGroup / TabsList look: a muted track with the picked option raised.
+# Three per row on phones, one even row from `sm` up.
+_TOGGLE_GROUP = ("grid grid-cols-3 gap-1 rounded-lg bg-muted p-1 "
+                 "sm:grid-cols-none sm:grid-flow-col sm:auto-cols-fr")
+_TOGGLE_ITEM = ("flex h-7 items-center justify-center rounded-md px-3 text-sm font-medium "
+                "text-muted-foreground transition-colors select-none hover:text-foreground "
+                "peer-checked:bg-background peer-checked:text-foreground peer-checked:shadow "
+                "peer-focus-visible:ring-1 peer-focus-visible:ring-ring")
+
+
+def toggle_group(name: str, options, *, value=None, onchange: str = None,
+                 label: str = None) -> Div:
+    """
+    A single-choice button group (shadcn ToggleGroup) for a handful of options.
+    Each button is a visually hidden native radio, so it submits inside a normal form
+    and arrow keys move between options without any JS. `onchange` sits on the group
+    (radio change events bubble), so read the pick from `event.target.value`.
+    `options` is [(value, label), …].
+    """
+    opts = [(str(v), lbl) for v, lbl in options]
+    val = str(value) if value is not None else (opts[0][0] if opts else "")
+    items = [
+        Label(Input(type="radio", name=name, value=v, checked=(v == val), cls="peer sr-only"),
+              Span(lbl, cls=_TOGGLE_ITEM),
+              cls="cursor-pointer")
+        for v, lbl in opts
+    ]
+    return Div(*items, role="radiogroup", cls=_TOGGLE_GROUP,
+               **({"aria-label": label} if label else {}),
+               **({"onchange": onchange} if onchange else {}))
+
+
 def action_menu(sub_id: int, name: str, *, can_edit: bool = True,
                 can_delete: bool = True) -> object:
     """

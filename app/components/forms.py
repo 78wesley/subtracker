@@ -9,7 +9,7 @@ added and edited on the subscription detail page.
 from fasthtml.common import *
 
 from app import timeutil
-from app.components.widgets import select_menu
+from app.components.widgets import select_menu, toggle_group
 from app.cost_utils import BASE_UNITS, FREQUENCIES, frequency_label
 from app.styles import FIELD, INPUT, LABEL, TEXTAREA, btn
 
@@ -55,11 +55,11 @@ def subscription_form(action_url: str, sub: dict = None, btn_label: str = "Save"
         _field("Name *", Input(name="name", value=s.get("name", ""),
                required=True, placeholder="e.g. Netflix", cls=INPUT)),
         period_block,
-        _field("Frequency", select_menu(
+        _field("Frequency", toggle_group(
             "frequency", [(u, freq_option_label(u)) for u in FREQUENCIES],
-            value=freq, width="w-full",
+            value=freq, label="Frequency",
             onchange="document.getElementById('custom-fields').style.display"
-                     " = this.value==='custom' ? 'block' : 'none'",
+                     " = event.target.value==='custom' ? 'block' : 'none'",
         )),
         Div(
             Div(
