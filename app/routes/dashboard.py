@@ -233,11 +233,13 @@ def _month_card(b: dict, today: date):
     )
 
     if b["remaining"]:
-        shown = b["remaining"][:6]
+        shown, hidden = b["remaining"][:6], b["remaining"][6:]
         rows = [_charge_row(c, today) for c in shown]
-        if len(b["remaining"]) > len(shown):
-            rows.append(P(f"+ {plural(len(b['remaining']) - len(shown), 'more payment')} "
-                          f"this month", cls=MUTED_SM + " pt-2"))
+        if hidden:
+            rows.append(Div(
+                disclosure(f"+ {plural(len(hidden), 'more payment')} this month",
+                           *[_charge_row(c, today) for c in hidden]),
+                cls="pt-2"))
         still_due = Div(
             Div(Span("Still to pay this month", cls="text-sm font-medium"),
                 Strong(fmt_eur(b["remaining_total"]), cls="tabular-nums"),
